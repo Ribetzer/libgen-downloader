@@ -5,8 +5,9 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "moduleDetection": "force",
     "jsx": "react-jsx",
-    "outDir": "./build",
+    "noEmit": true,
     "strict": true,
     "noImplicitAny": true,
     "strictNullChecks": true,
@@ -15,8 +16,8 @@
     "noImplicitReturns": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
-    "types": ["bun-types"]
+    "types": ["bun"]
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "**/*.spec.ts"]
+  "include": ["src/**/*", "test/**/*"],
+  "exclude": ["node_modules", "build", "standalone-executables"]
 }

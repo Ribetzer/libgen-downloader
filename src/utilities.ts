@@ -38,8 +38,8 @@ export async function attempt<T>(
       }
       await delay(FAIL_REQ_ATTEMPT_DELAY_MS);
       if (index + 1 === FAIL_REQ_ATTEMPT_COUNT && onError) {
-          onError((error as Error)?.message);
-        }
+        onError((error as Error)?.message);
+      }
     }
   }
   return undefined;
@@ -94,9 +94,7 @@ const getNextPageOption = (
       ];
     }
     case "error": {
-      return [
-        createOptionItem(Option.NEXT_PAGE, Label.NEXT_PAGE_ERROR, handleRetryNextPageOption),
-      ];
+      return [createOptionItem(Option.NEXT_PAGE, Label.NEXT_PAGE_ERROR, handleRetryNextPageOption)];
     }
     case "unavailable": {
       return [
@@ -129,20 +127,18 @@ export const constructListItems = ({
   }));
 
   return [
-    ...entryListItems.slice(
-      entryListItems.length - RESULT_LIST_ACTIVE_LIST_INDEX
-    ),
+    ...entryListItems.slice(entryListItems.length - RESULT_LIST_ACTIVE_LIST_INDEX),
 
     createOptionItem(Option.SEARCH, Label.SEARCH, handleSearchOption),
 
     ...getNextPageOption(nextPageStatus, handleNextPageOption, handleRetryNextPageOption),
 
-    ...((() => {
+    ...(() => {
       if (currentPage > 1) {
         return [createOptionItem(Option.PREV_PAGE, Label.PREV_PAGE, handlePrevPageOption)];
       }
       return [];
-    })()),
+    })(),
 
     createOptionItem(
       Option.START_BULK_DOWNLOAD,

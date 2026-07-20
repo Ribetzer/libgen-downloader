@@ -15,7 +15,7 @@ const MirrorFailover = () => {
       <Text color="yellow">{Label.TRYING_OTHER_MIRRORS}</Text>
       {mirrorCheckStates.map((mirror) => (
         <Box key={mirror.src}>
-          <Text color="gray">  </Text>
+          <Text color="gray"> </Text>
           {mirror.status === "checking" && (
             <Text color="yellow">
               <Spinner />

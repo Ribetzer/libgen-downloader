@@ -29,7 +29,6 @@ export class LibgenPlusAdapter implements Adapter {
     const entryElements = containerTable.children;
 
     for (const element of entryElements) {
-
       const id = nanoid();
       const authors = clearText(element.children[1]?.textContent || "")
         .split(";")

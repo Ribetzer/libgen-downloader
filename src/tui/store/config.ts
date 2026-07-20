@@ -25,7 +25,9 @@ export const initialConfigState: Omit<IConfigState, "fetchConfig" | "switchMirro
 };
 
 export const createConfigStateSlice = (
-  set: (partial: Partial<TCombinedStore> | ((state: TCombinedStore) => Partial<TCombinedStore>)) => void,
+  set: (
+    partial: Partial<TCombinedStore> | ((state: TCombinedStore) => Partial<TCombinedStore>)
+  ) => void,
   get: () => TCombinedStore
 ) => ({
   ...initialConfigState,
