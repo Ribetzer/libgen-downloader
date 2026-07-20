@@ -25,7 +25,7 @@ export default defineConfig([
     },
     rules: {
       "linebreak-style": ["error", "unix"],
-      quotes: ["error", "double"],
+      quotes: ["error", "double", { avoidEscape: true }],
       semi: ["error", "always"],
       "no-ternary": "error",
       "react/no-multi-comp": "error",

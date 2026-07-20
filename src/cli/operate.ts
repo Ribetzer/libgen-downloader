@@ -60,7 +60,9 @@ export const operate = async (flags: Record<string, unknown>) => {
       return;
     }
 
-    const downloadUrl = store.mirrorAdapter?.getMainDownloadURLFromDocument(detailPageResult.document);
+    const downloadUrl = store.mirrorAdapter?.getMainDownloadURLFromDocument(
+      detailPageResult.document
+    );
     if (!downloadUrl) {
       console.log("Failed to find download url");
       return;

@@ -45,7 +45,9 @@ export const initialDownloadQueueState = {
 };
 
 export const createDownloadQueueStateSlice = (
-  set: (partial: Partial<TCombinedStore> | ((state: TCombinedStore) => Partial<TCombinedStore>)) => void,
+  set: (
+    partial: Partial<TCombinedStore> | ((state: TCombinedStore) => Partial<TCombinedStore>)
+  ) => void,
   get: () => TCombinedStore
 ) => ({
   ...initialDownloadQueueState,
@@ -130,7 +132,9 @@ export const createDownloadQueueStateSlice = (
         continue;
       }
 
-      const downloadUrl = store.mirrorAdapter?.getMainDownloadURLFromDocument(mirrorPageResult.document);
+      const downloadUrl = store.mirrorAdapter?.getMainDownloadURLFromDocument(
+        mirrorPageResult.document
+      );
 
       if (!downloadUrl) {
         store.setWarningMessage(`Couldn't find the download url for "${entry.title}"`);
@@ -197,11 +201,16 @@ export const createDownloadQueueStateSlice = (
           ...previous.downloadProgressMap[entryId],
           ...downloadProgress,
           progress: (() => {
+            if (!("progress" in downloadProgress)) {
+              return previous.downloadProgressMap[entryId]?.progress;
+            }
             if (downloadProgress.progress === undefined) {
               return 0;
             }
-            return (previous.downloadProgressMap[entryId]?.progress || 0) +
-              (downloadProgress.progress || 0);
+            return (
+              (previous.downloadProgressMap[entryId]?.progress || 0) +
+              (downloadProgress.progress || 0)
+            );
           })(),
         },
       },

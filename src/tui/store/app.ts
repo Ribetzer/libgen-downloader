@@ -89,7 +89,9 @@ export const initialAppState = {
 };
 
 export const createAppStateSlice = (
-  set: (partial: Partial<TCombinedStore> | ((state: TCombinedStore) => Partial<TCombinedStore>)) => void,
+  set: (
+    partial: Partial<TCombinedStore> | ((state: TCombinedStore) => Partial<TCombinedStore>)
+  ) => void,
   get: () => TCombinedStore
 ) => ({
   CLIMode: false,

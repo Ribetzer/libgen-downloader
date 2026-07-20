@@ -14,7 +14,9 @@ export const initialCacheState = {
 };
 
 export const createCacheStateSlice = (
-  set: (partial: Partial<TCombinedStore> | ((state: TCombinedStore) => Partial<TCombinedStore>)) => void,
+  set: (
+    partial: Partial<TCombinedStore> | ((state: TCombinedStore) => Partial<TCombinedStore>)
+  ) => void,
   get: () => TCombinedStore
 ) => ({
   ...initialCacheState,

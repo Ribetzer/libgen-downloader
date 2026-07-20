@@ -1,7 +1,8 @@
 import contentDisposition from "content-disposition";
-// eslint-disable-next-line unicorn/prefer-node-protocol
-import fs from "fs";
-import { DownloadResult } from "../models/download-result";
+import fs from "node:fs";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import type { DownloadResult } from "../models/download-result";
 
 interface downloadFileArguments {
   downloadStream: Response;
@@ -37,25 +38,20 @@ export const downloadFile = async ({
 
   onStart(filename, total);
 
-  const file = fs.createWriteStream(path);
-  const reader = downloadStream.body.getReader();
+  const progressStream = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      const buffer = Buffer.from(chunk);
+      onData(filename, buffer, total);
+      callback(undefined, buffer);
+    },
+  });
 
   try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      const chunk = Buffer.from(value);
-      file.write(chunk);
-      onData(filename, chunk, total);
-    }
-
-    file.end();
-
-    await new Promise<void>((resolve, reject) => {
-      file.on("finish", resolve);
-      file.on("error", reject);
-    });
+    await pipeline(
+      Readable.from(downloadStream.body, { objectMode: false }),
+      progressStream,
+      fs.createWriteStream(path)
+    );
 
     const downloadResult: DownloadResult = {
       path,
@@ -65,7 +61,6 @@ export const downloadFile = async ({
 
     return downloadResult;
   } catch {
-    file.destroy();
     throw new Error(`(${filename}) Error occurred while downloading file`);
   }
 };

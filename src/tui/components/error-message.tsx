@@ -25,14 +25,14 @@ export function ErrorMessage() {
       <OptionList
         options={{
           ...(canRetry && {
-                [ErrorMessageOption.RETRY]: {
-                  label: Label.RETRY,
-                  onSelect: () => {
-                    setErrorMessage(undefined);
-                    handleSearchSubmit();
-                  },
-                },
-              }),
+            [ErrorMessageOption.RETRY]: {
+              label: Label.RETRY,
+              onSelect: () => {
+                setErrorMessage(undefined);
+                handleSearchSubmit();
+              },
+            },
+          }),
           [ErrorMessageOption.EXIT]: {
             label: Label.EXIT,
             onSelect: () => handleExit(),

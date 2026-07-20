@@ -50,7 +50,9 @@ export const initialBulkDownloadQueueState = {
 };
 
 export const createBulkDownloadQueueStateSlice = (
-  set: (partial: Partial<TCombinedStore> | ((state: TCombinedStore) => Partial<TCombinedStore>)) => void,
+  set: (
+    partial: Partial<TCombinedStore> | ((state: TCombinedStore) => Partial<TCombinedStore>)
+  ) => void,
   get: () => TCombinedStore
 ) => ({
   ...initialBulkDownloadQueueState,
@@ -183,7 +185,6 @@ export const createBulkDownloadQueueStateSlice = (
   operateBulkDownloadQueue: async () => {
     const bulkDownloadQueue = get().bulkDownloadQueue;
     for (const [index, item] of bulkDownloadQueue.entries()) {
-
       const detailPageUrl = get().mirrorAdapter?.getDetailPageURL(item.md5);
       if (!detailPageUrl) {
         get().setWarningMessage(`Couldn't get the detail page URL for ${item.md5}`);
@@ -200,7 +201,9 @@ export const createBulkDownloadQueueStateSlice = (
         continue;
       }
 
-      const downloadUrl = get().mirrorAdapter?.getMainDownloadURLFromDocument(detailPageResult.document);
+      const downloadUrl = get().mirrorAdapter?.getMainDownloadURLFromDocument(
+        detailPageResult.document
+      );
       if (!downloadUrl) {
         get().setWarningMessage(`Couldn't find the download url for ${item.md5}`);
         get().onBulkQueueItemFail(index);
