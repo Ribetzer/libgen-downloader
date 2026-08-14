@@ -137,6 +137,123 @@ $ libgen-downloader -o ./downloads -b ./MD5_LIST.txt   # just this run
 The saved default lives in `%APPDATA%\libgen-downloader\config.json` on Windows
 and `$XDG_CONFIG_HOME/libgen-downloader/config.json` elsewhere.
 
+## Building and running from source
+
+[Bun](https://bun.sh) is the package manager, test runner and bundler. Install
+dependencies once:
+
+```
+bun install
+```
+
+### Run it straight from the source
+
+```
+bun run start                                          # interactive TUI
+bun run start -- --doi 10.1080/2165347X.2013.870057
+bun run start -- -b ./MD5_LIST.txt
+```
+
+The `--` separates Bun's own arguments from the app's. When the app exits
+non-zero — a rejected DOI, or a bulk run with failures — Bun prints
+`error: script "start" exited with code 1` afterwards. That is Bun reporting the
+exit code, not a crash.
+
+### Build a standalone executable
+
+```
+bun run compile:windows-x64     # or compile:linux-x64, compile:macos-arm64, ...
+```
+
+The binary lands in `standalone-executables/` and carries its own runtime, so it
+needs neither Bun nor Node to run. `bun run compile` builds every target at once.
+
+### Build the Node bundle
+
+```
+bun run build
+node build/index.js --help
+```
+
+On Windows the last step of `build` fails with `cat: illegal option --`; that
+step only prepends a `#!/usr/bin/env node` line, which matters for npm installs
+on macOS and Linux. The bundle itself is written and runs fine.
+
+## Putting it on your PATH
+
+So the command can be typed by name from any directory.
+
+**Windows.** Copy the compiled executable into a directory that is already on
+your PATH — `%USERPROFILE%\.local\bin` is a good choice if you have it — and
+give it the short name:
+
+```
+Copy-Item .\standalone-executables\libgen-downloader-windows-x64.exe `
+  "$env:USERPROFILE\.local\bin\libgen-downloader.exe" -Force
+```
+
+If that directory is not on your PATH yet, add it once:
+
+```
+[Environment]::SetEnvironmentVariable("Path",
+  [Environment]::GetEnvironmentVariable("Path", "User") + ";$env:USERPROFILE\.local\bin",
+  "User")
+```
+
+then open a new terminal. Repeat the copy after each rebuild, otherwise the
+command keeps running the older build.
+
+**macOS and Linux.** The same idea:
+
+```
+cp ./standalone-executables/libgen-downloader-linux-x64 ~/.local/bin/libgen-downloader
+chmod +x ~/.local/bin/libgen-downloader
+```
+
+**Tracking the source instead.** To avoid re-copying a large binary while
+developing, define a shell function that runs the Node bundle, which then only
+needs `bun run build` to pick up changes. In a PowerShell profile
+(`$PROFILE`):
+
+```
+function libgen-downloader { node "C:\path\to\libgen-downloader\build\index.js" @args }
+```
+
+or in `.bashrc` / `.zshrc`:
+
+```
+libgen-downloader() { node ~/path/to/libgen-downloader/build/index.js "$@"; }
+```
+
+Remove any executable of the same name from your PATH first, since a real
+executable takes precedence over a function.
+
+## Development checks
+
+```
+bun run typecheck
+bun test
+bun test test/filename.test.ts        # a single file
+bun test -t "repairs the encoding"    # a single test by name
+bun run lint
+bun run format:check
+```
+
+On a Windows checkout with `core.autocrlf=true`, `lint` and `format:check` report
+every file as broken, because the working tree is CRLF while the repository
+enforces LF. The code is fine; to see genuine findings, neutralise that one
+dimension:
+
+```
+bunx eslint "src/**/*.{ts,tsx}" "test/**/*.ts" --rule "{\"linebreak-style\":\"off\"}"
+bunx prettier --check "src/**/*.{ts,tsx,md,json}" "test/**/*.ts" --config ./.prettierrc --end-of-line auto
+```
+
+CI checks out LF on Linux and runs the plain scripts, so it is unaffected.
+
+Tests never touch the network: they stub `fetch` and run against real captured
+LibGen responses in `test/fixtures/`.
+
 ## Changelogs
 
 v3.0.0
