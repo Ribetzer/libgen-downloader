@@ -5,6 +5,7 @@ export const DownloadIndicator = () => {
   const totalAddedToDownloadQueue = useBoundStore((state) => state.totalAddedToDownloadQueue);
   const totalDownloaded = useBoundStore((state) => state.totalDownloaded);
   const totalFailed = useBoundStore((state) => state.totalFailed);
+  const outputDirectory = useBoundStore((state) => state.outputDirectory);
 
   if (totalAddedToDownloadQueue === 0) {
     return;
@@ -17,7 +18,7 @@ export const DownloadIndicator = () => {
           DOWNLOADED {totalDownloaded}/{totalAddedToDownloadQueue}
         </Text>{" "}
         {totalFailed > 0 && <Text color="redBright">FAIL ({totalFailed}) </Text>}
-        to <Text color="blueBright">{process.cwd()}</Text>
+        to <Text color="blueBright">{outputDirectory}</Text>
       </Text>
     </Box>
   );

@@ -50,7 +50,13 @@ chmod +x ./libgen-downloader-linux-*
   before it is reported as failed. The mirror that served a file is tried first
   for the rest of the run, and a failed row states why it failed.
 - Interrupted transfers are restarted a few times, and a truncated file is
-  removed instead of being left behind as a half-written download.
+  removed instead of being left behind as a half-written download. A mirror
+  answering `429` or `503` is backed off from rather than hammered.
+- Readable filenames: `Title (Year) [DOI].pdf`, with the encoding repaired and
+  characters Windows rejects replaced.
+- A file already present at its full size is left alone, so re-running a list
+  only fetches what is still missing.
+- Configurable download folder, for one run or remembered between runs.
 - Command line parameters;
   ```
   Usage
@@ -94,6 +100,22 @@ b7abef3d085a1007a137a247dcff8dcb
   back in.
 - The command exits with status `1` if any item failed, so a scripted run can
   tell a clean sweep from a partial one.
+- Anything that failed is written to `libgen_downloader_failed_<timestamp>.txt`
+  with its reason. That file is itself a valid list, so `-b` it to retry only
+  the failures.
+
+## Download folder
+
+Files go to the current directory unless told otherwise:
+
+```
+$ libgen-downloader --set-output C:\Papers   # remember it, then exit
+$ libgen-downloader -o ./downloads -b ./MD5_LIST.txt   # just this run
+```
+
+`--output` wins over the saved default, which wins over the current directory.
+The saved default lives in `%APPDATA%\libgen-downloader\config.json` on Windows
+and `$XDG_CONFIG_HOME/libgen-downloader/config.json` elsewhere.
 
 ## Changelogs
 

@@ -1,0 +1,91 @@
+import { describe, expect, it } from "bun:test";
+import {
+  buildDownloadFileName,
+  MAX_FILE_NAME_LENGTH,
+  repairEncoding,
+  withCollisionSuffix,
+} from "../src/api/data/filename";
+
+// Exactly what libgen.li sent for this article during a real run.
+const LIBGEN_NAME =
+  "Efficiently Building a Matrix to Rotate One Vector to Another" +
+  "{Moller, Tomas_ Hughes, John F.}(1999 January)" +
+  "[10.1080_10867651.1999.10487509]{18014866} libgen.li.pdf";
+
+// How a UTF-8 name looks after a header is decoded as ISO-8859-1.
+const asMojibake = (value: string) => Buffer.from(value, "utf8").toString("latin1");
+
+describe("repairEncoding", () => {
+  it("recovers a UTF-8 name that was read as ISO-8859-1", () => {
+    expect(repairEncoding(asMojibake("Möller, Tomas"))).toBe("Möller, Tomas");
+  });
+
+  it("leaves a plain name alone", () => {
+    expect(repairEncoding("Hughes, John F.")).toBe("Hughes, John F.");
+  });
+
+  it("keeps the original when the bytes are not valid UTF-8", () => {
+    const notUtf8 = `caf${String.fromCodePoint(0xe9)}`;
+    expect(repairEncoding(notUtf8)).toBe(notUtf8);
+  });
+});
+
+describe("buildDownloadFileName", () => {
+  it("keeps the title, year and DOI from a libgen name", () => {
+    expect(buildDownloadFileName(LIBGEN_NAME)).toBe(
+      "Efficiently Building a Matrix to Rotate One Vector to Another (1999) " +
+        "[10.1080_10867651.1999.10487509].pdf"
+    );
+  });
+
+  it("repairs the encoding before rebuilding", () => {
+    expect(buildDownloadFileName(asMojibake("Tödliche Zahlen{Autor}(2001)[10.1_2]{7}.pdf"))).toBe(
+      "Tödliche Zahlen (2001) [10.1_2].pdf"
+    );
+  });
+
+  it("passes through a name that carries no metadata", () => {
+    expect(buildDownloadFileName("simple book.epub")).toBe("simple book.epub");
+  });
+
+  it("drops metadata groups that are absent", () => {
+    expect(buildDownloadFileName("Some Title{Author}(2011){55} libgen.li.djvu")).toBe(
+      "Some Title (2011).djvu"
+    );
+  });
+
+  it("replaces characters Windows rejects", () => {
+    expect(buildDownloadFileName('Notes: "A/B" <draft>.pdf')).toBe("Notes_ _A_B_ _draft_.pdf");
+  });
+
+  it("escapes reserved device names", () => {
+    expect(buildDownloadFileName("CON.pdf")).toBe("_CON.pdf");
+  });
+
+  it("trims the end of the title and never the extension", () => {
+    const longTitle = "A".repeat(300);
+    const result = buildDownloadFileName(`${longTitle}(1999)[10.1_2]{3} libgen.li.pdf`, 80);
+
+    expect(result.length).toBeLessThanOrEqual(80 + ".pdf".length);
+    expect(result.startsWith("AAAA")).toBe(true);
+    expect(result.endsWith("(1999) [10.1_2].pdf")).toBe(true);
+  });
+
+  it("stays within the default budget for a very long real-world name", () => {
+    const result = buildDownloadFileName(`${"Long Title ".repeat(40)}(2020)[10.1_2]{9}.pdf`);
+
+    expect(result.length).toBeLessThanOrEqual(MAX_FILE_NAME_LENGTH + ".pdf".length);
+  });
+});
+
+describe("withCollisionSuffix", () => {
+  it("inserts the index before the extension", () => {
+    expect(withCollisionSuffix("Paper (1999) [10.1_2].pdf", 2)).toBe(
+      "Paper (1999) [10.1_2] (2).pdf"
+    );
+  });
+
+  it("handles a name without an extension", () => {
+    expect(withCollisionSuffix("Paper", 3)).toBe("Paper (3)");
+  });
+});

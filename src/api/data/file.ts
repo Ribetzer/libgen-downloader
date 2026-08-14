@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import { extractMD5 } from "./md5";
 
 const MIRROR_HEADER_PREFIX = "# mirror:";
@@ -64,15 +65,48 @@ export function parseMD5List(contents: string): MD5ListParseResult {
   return { md5List, invalidLines, preferredMirror };
 }
 
-export async function createMD5ListFile(md5List: string[], mirrorSource?: string) {
+export interface ListFileOptions {
+  mirrorSource?: string;
+  outputDirectory?: string;
+}
+
+const writeListFile = async (filename: string, lines: string[], outputDirectory?: string) => {
+  await fs.promises.writeFile(path.join(outputDirectory || ".", filename), lines.join("\n"));
+  return filename;
+};
+
+export async function createMD5ListFile(md5List: string[], options: ListFileOptions = {}) {
   const filename = `libgen_downloader_md5_list_${Date.now().toString()}.txt`;
 
   const lines: string[] = [];
-  if (mirrorSource) {
-    lines.push(`${MIRROR_HEADER_PREFIX} ${mirrorSource}`);
+  if (options.mirrorSource) {
+    lines.push(`${MIRROR_HEADER_PREFIX} ${options.mirrorSource}`);
   }
   lines.push(...md5List);
 
-  await fs.promises.writeFile(`./${filename}`, lines.join("\n"));
-  return filename;
+  return writeListFile(filename, lines, options.outputDirectory);
+}
+
+export interface FailedMD5 {
+  md5: string;
+  reason: string;
+}
+
+/**
+ * Written so it can be handed straight back to `-b`: `parseMD5List` takes the
+ * first 32 character hex run on a line, so the trailing reason is ignored on
+ * a retry run but still readable here.
+ */
+export async function createFailureListFile(failures: FailedMD5[], options: ListFileOptions = {}) {
+  const filename = `libgen_downloader_failed_${Date.now().toString()}.txt`;
+
+  const lines = ["# failed downloads, re-run with: libgen-downloader -b <this file>"];
+  if (options.mirrorSource) {
+    lines.push(`${MIRROR_HEADER_PREFIX} ${options.mirrorSource}`);
+  }
+  for (const failure of failures) {
+    lines.push(`${failure.md5}\t${failure.reason}`);
+  }
+
+  return writeListFile(filename, lines, options.outputDirectory);
 }

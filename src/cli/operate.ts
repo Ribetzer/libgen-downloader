@@ -1,13 +1,39 @@
 import fs from "node:fs";
+import path from "node:path";
 import { describeResolveFailure } from "../api/data/download";
 import { parseMD5List } from "../api/data/file";
 import { getMD5FromURL } from "../api/data/md5";
 import { resolveDownloadURL } from "../api/data/resolve";
+import {
+  ensureOutputDirectory,
+  resolveOutputDirectory,
+  writeUserConfig,
+} from "../api/data/user-config";
 import renderTUI from "../tui/index";
 import { LAYOUT_KEY } from "../tui/layouts/keys";
 import { useBoundStore } from "../tui/store/index";
 
 const MAX_REPORTED_INVALID_LINES = 5;
+
+/**
+ * Resolves the download folder once per run (flag, then saved default, then
+ * the current directory) and makes sure it can actually be written to before
+ * any download starts.
+ */
+const applyOutputDirectory = async (flags: Record<string, unknown>) => {
+  const directory = await resolveOutputDirectory(flags.output as string | undefined);
+
+  try {
+    await ensureOutputDirectory(directory);
+  } catch (error: unknown) {
+    console.log(`Can't use "${directory}" as the download folder: ${(error as Error)?.message}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  useBoundStore.getState().setOutputDirectory(directory);
+  return directory;
+};
 
 /**
  * `fetchConfig` reports its own failures through the store, and the snapshot
@@ -49,6 +75,26 @@ export const operate = async (flags: Record<string, unknown>) => {
 };
 
 const runFlags = async (flags: Record<string, unknown>) => {
+  if (flags.setOutput) {
+    const directory = path.resolve(flags.setOutput as string);
+
+    try {
+      await ensureOutputDirectory(directory);
+      const configPath = await writeUserConfig({ outputDirectory: directory });
+      console.log(`Downloads will go to ${directory}`);
+      console.log(`Saved in ${configPath}`);
+    } catch (error: unknown) {
+      console.log(`Couldn't save "${directory}": ${(error as Error)?.message}`);
+      process.exitCode = 1;
+    }
+
+    return;
+  }
+
+  if (!(await applyOutputDirectory(flags))) {
+    return;
+  }
+
   if (flags.search) {
     const query = flags.search as string;
     if (query.length < 3) {

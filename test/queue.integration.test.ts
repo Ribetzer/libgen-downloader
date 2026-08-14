@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { Writable } from "node:stream";
 import { LibgenPlusAdapter } from "../src/api/adapters/libgen-plus-adapter";
 import type { Entry } from "../src/api/models/entry";
@@ -12,6 +14,8 @@ import { useBoundStore } from "../src/tui/store";
 import { getRequestURL, mockFetch } from "./support/fetch-mock";
 
 const BASE_URL = "https://libgen.example/";
+// Not a real directory, so nothing is ever treated as already downloaded.
+const OUTPUT_DIRECTORY = path.join(os.tmpdir(), "libgen-downloader-test-output");
 const originalStoreState = useBoundStore.getState();
 
 const createEntry = (id: string, md5: string): Entry => ({
@@ -88,6 +92,7 @@ beforeEach(() => {
       CLIMode: false,
       mirror: { src: BASE_URL, type: "libgen-plus" },
       mirrorAdapter: new LibgenPlusAdapter(BASE_URL),
+      outputDirectory: OUTPUT_DIRECTORY,
       setWarningMessage: mock(() => {}),
     },
     true
@@ -133,7 +138,7 @@ describe("download queue integration", () => {
       "https://libgen.example/ads.php?md5=success",
       "https://libgen.example/files/success.epub",
     ]);
-    expect(createWriteStream).toHaveBeenCalledWith("./success.epub");
+    expect(createWriteStream).toHaveBeenCalledWith(path.join(OUTPUT_DIRECTORY, "success.epub"));
     expect(Buffer.concat(downloadedChunks).toString()).toBe("downloaded content");
     expect(state.downloadProgressMap[entry.id]).toMatchObject({
       filename: "success.epub",
@@ -221,11 +226,14 @@ describe("bulk download integration", () => {
     expect(state.failedBulkDownloadItemCount).toBe(1);
     expect(state.isBulkDownloadComplete).toBe(true);
     expect(state.createdMD5ListFileName).toMatch(/^libgen_downloader_md5_list_\d+\.txt$/);
-    expect(writeFile).toHaveBeenCalledTimes(1);
-    expect(writeFile.mock.calls[0]?.[0].toString()).toMatch(
-      /^\.\/libgen_downloader_md5_list_\d+\.txt$/
+    expect(writeFile.mock.calls[0]?.[0].toString()).toBe(
+      path.join(OUTPUT_DIRECTORY, state.createdMD5ListFileName)
     );
     expect(writeFile.mock.calls[0]?.[1]).toBe(`# mirror: ${BASE_URL}\nsuccess`);
+
+    // The failed item is written to its own file, ready to feed back to -b.
+    expect(state.createdFailureListFileName).toMatch(/^libgen_downloader_failed_\d+\.txt$/);
+    expect(writeFile.mock.calls[1]?.[1]).toContain("missing\tnot found on any mirror");
   });
 
   it("records why an item failed instead of leaving a bare FAILED row", async () => {

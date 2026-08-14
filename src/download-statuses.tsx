@@ -7,6 +7,7 @@ export enum DownloadStatus {
   DOWNLOADING = "DOWNLOADING",
   RETRYING = "RETRYING",
   DOWNLOADED = "DOWNLOADED",
+  SKIPPED = "SKIPPED",
   FAILED = "FAILED",
   CONNECTING_TO_LIBGEN = "CONNECTING_TO_LIBGEN",
   FETCHING_MD5 = "FETCHING_MD5",
@@ -42,6 +43,12 @@ export const downloadStatusIndicators = {
     <Text color="green" inverse={true}>
       {" "}
       DOWNLOADED{" "}
+    </Text>
+  ),
+  [DownloadStatus.SKIPPED]: (
+    <Text color="cyan" inverse={true}>
+      {" "}
+      ALREADY HAVE{" "}
     </Text>
   ),
   [DownloadStatus.FAILED]: (

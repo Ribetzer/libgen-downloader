@@ -3,7 +3,8 @@ import { filesize } from "filesize";
 export const getDownloadProgress = (progress: number, total: number) => {
   let rawPercentage = 0;
   if (total !== 0) {
-    rawPercentage = (progress / total) * 100;
+    // A mirror that reports a wrong content-length must not produce 153%.
+    rawPercentage = Math.min((progress / total) * 100, 100);
   }
   const progressPercentage = rawPercentage.toFixed(2);
 

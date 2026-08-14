@@ -4,9 +4,12 @@ import { DownloadStatus } from "../../download-statuses";
 import { LAYOUT_KEY } from "../layouts/keys";
 import { IDownloadProgress } from "./download-queue";
 import { downloadByMD5 } from "../../api/data/download";
-import { createMD5ListFile } from "../../api/data/file";
+import { createFailureListFile, createMD5ListFile } from "../../api/data/file";
 import { getMD5FromURL } from "../../api/data/md5";
 import objectHash from "object-hash";
+
+// An item already on disk counts as held, not as work still to do.
+const SUCCESS_STATUSES = new Set([DownloadStatus.DOWNLOADED, DownloadStatus.SKIPPED]);
 
 export interface IBulkDownloadQueueItem extends IDownloadProgress {
   md5: string;
@@ -21,6 +24,7 @@ export interface IBulkDownloadQueueState {
   failedBulkDownloadItemCount: number;
 
   createdMD5ListFileName: string;
+  createdFailureListFileName: string;
 
   bulkDownloadSelectedEntries: Record<string, Entry>;
   bulkDownloadQueue: IBulkDownloadQueueItem[];
@@ -29,9 +33,14 @@ export interface IBulkDownloadQueueState {
   removeFromBulkDownloadQueue: (entry: Entry) => void;
   onBulkQueueItemProcessing: (index: number) => void;
   onBulkQueueItemStart: (index: number, filename: string, total: number) => void;
-  onBulkQueueItemData: (index: number, filename: string, chunk: Buffer, total: number) => void;
+  onBulkQueueItemProgress: (
+    index: number,
+    filename: string,
+    receivedBytes: number,
+    total: number
+  ) => void;
   onBulkQueueItemRetry: (index: number, message: string) => void;
-  onBulkQueueItemComplete: (index: number, mirrorSource?: string) => void;
+  onBulkQueueItemComplete: (index: number, mirrorSource?: string, skipped?: boolean) => void;
   onBulkQueueItemFail: (index: number, error?: string) => void;
   operateBulkDownloadQueue: () => Promise<void>;
   startBulkDownload: () => Promise<void>;
@@ -46,6 +55,7 @@ export const initialBulkDownloadQueueState = {
   failedBulkDownloadItemCount: 0,
 
   createdMD5ListFileName: "",
+  createdFailureListFileName: "",
 
   bulkDownloadSelectedEntries: {},
   bulkDownloadQueue: [],
@@ -123,13 +133,20 @@ export const createBulkDownloadQueueStateSlice = (
           ...item,
           filename,
           total,
+          // Each attempt starts from zero, including one on a second mirror.
+          progress: 0,
           status: DownloadStatus.DOWNLOADING,
         };
       }),
     }));
   },
 
-  onBulkQueueItemData: (index: number, filename: string, chunk: Buffer, total: number) => {
+  onBulkQueueItemProgress: (
+    index: number,
+    filename: string,
+    receivedBytes: number,
+    total: number
+  ) => {
     set((previous) => ({
       bulkDownloadQueue: previous.bulkDownloadQueue.map((item, index_) => {
         if (index !== index_) {
@@ -140,7 +157,7 @@ export const createBulkDownloadQueueStateSlice = (
           ...item,
           filename,
           total,
-          progress: (item.progress || 0) + chunk.length,
+          progress: receivedBytes,
         };
       }),
     }));
@@ -165,7 +182,12 @@ export const createBulkDownloadQueueStateSlice = (
     }));
   },
 
-  onBulkQueueItemComplete: (index: number, mirrorSource?: string) => {
+  onBulkQueueItemComplete: (index: number, mirrorSource?: string, skipped?: boolean) => {
+    let status = DownloadStatus.DOWNLOADED;
+    if (skipped) {
+      status = DownloadStatus.SKIPPED;
+    }
+
     set((previous) => ({
       bulkDownloadQueue: previous.bulkDownloadQueue.map((item, index_) => {
         if (index !== index_) {
@@ -174,7 +196,7 @@ export const createBulkDownloadQueueStateSlice = (
 
         return {
           ...item,
-          status: DownloadStatus.DOWNLOADED,
+          status,
           error: undefined,
           mirror: mirrorSource,
         };
@@ -214,11 +236,12 @@ export const createBulkDownloadQueueStateSlice = (
       const outcome = await downloadByMD5({
         md5: item.md5,
         candidates: get().getMirrorCandidates(),
+        outputDirectory: get().outputDirectory,
         onStart: (filename, total) => {
           get().onBulkQueueItemStart(index, filename, total);
         },
-        onData: (filename, chunk, total) => {
-          get().onBulkQueueItemData(index, filename, chunk, total);
+        onProgress: (filename, receivedBytes, total) => {
+          get().onBulkQueueItemProgress(index, filename, receivedBytes, total);
         },
         onMirrorUnreachable: (mirrorSource) => {
           get().markMirrorUnreachable(mirrorSource);
@@ -235,27 +258,46 @@ export const createBulkDownloadQueueStateSlice = (
       }
 
       get().setPreferredMirrorSource(outcome.mirror.src);
-      get().onBulkQueueItemComplete(index, outcome.mirror.src);
+      get().onBulkQueueItemComplete(index, outcome.mirror.src, outcome.result.skipped);
     }
 
     set({
       isBulkDownloadComplete: true,
     });
 
+    const listFileOptions = {
+      mirrorSource: get().preferredMirrorSource || get().mirror?.src,
+      outputDirectory: get().outputDirectory,
+    };
+
     const completedMD5List = get()
-      .bulkDownloadQueue.filter((item) => item.status === DownloadStatus.DOWNLOADED)
+      .bulkDownloadQueue.filter((item) => SUCCESS_STATUSES.has(item.status))
       .map((item) => item.md5);
 
     try {
-      const filename = await createMD5ListFile(
-        completedMD5List,
-        get().preferredMirrorSource || get().mirror?.src
-      );
+      const filename = await createMD5ListFile(completedMD5List, listFileOptions);
       set({
         createdMD5ListFileName: filename,
       });
     } catch {
       get().setWarningMessage("Couldn't create the MD5 list file");
+    }
+
+    const failures = get()
+      .bulkDownloadQueue.filter((item) => item.status === DownloadStatus.FAILED)
+      .map((item) => ({ md5: item.md5, reason: item.error || "unknown error" }));
+
+    if (failures.length === 0) {
+      return;
+    }
+
+    try {
+      const filename = await createFailureListFile(failures, listFileOptions);
+      set({
+        createdFailureListFileName: filename,
+      });
+    } catch {
+      get().setWarningMessage("Couldn't create the failed downloads file");
     }
   },
 
@@ -270,6 +312,7 @@ export const createBulkDownloadQueueStateSlice = (
       completedBulkDownloadItemCount: 0,
       failedBulkDownloadItemCount: 0,
       createdMD5ListFileName: "",
+      createdFailureListFileName: "",
       isBulkDownloadComplete: false,
     });
     get().setActiveLayout(LAYOUT_KEY.BULK_DOWNLOAD_LAYOUT);

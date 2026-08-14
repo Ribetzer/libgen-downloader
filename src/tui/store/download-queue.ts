@@ -137,17 +137,18 @@ export const createDownloadQueueStateSlice = (
           const outcome = await downloadByMD5({
             md5,
             candidates: store.getMirrorCandidates(),
+            outputDirectory: store.outputDirectory,
             onStart: (filename, total) => {
               store.updateCurrentDownloadProgress(entry.id, {
                 filename,
-                progress: undefined,
+                progress: 0,
                 total,
               });
             },
-            onData: (filename, chunk, total) => {
+            onProgress: (filename, receivedBytes, total) => {
               store.updateCurrentDownloadProgress(entry.id, {
                 filename,
-                progress: chunk.length,
+                progress: receivedBytes,
                 total,
               });
             },
@@ -156,7 +157,7 @@ export const createDownloadQueueStateSlice = (
             },
             onRetry: () => {
               store.updateCurrentDownloadProgress(entry.id, {
-                progress: undefined,
+                progress: 0,
                 status: DownloadStatus.RETRYING,
               });
             },
@@ -173,8 +174,14 @@ export const createDownloadQueueStateSlice = (
 
           store.setPreferredMirrorSource(outcome.mirror.src);
           store.increaseTotalDownloaded();
+
+          let finalStatus = DownloadStatus.DOWNLOADED;
+          if (outcome.result.skipped) {
+            finalStatus = DownloadStatus.SKIPPED;
+          }
+
           store.updateCurrentDownloadProgress(entry.id, {
-            status: DownloadStatus.DOWNLOADED,
+            status: finalStatus,
           });
         } finally {
           store.removeEntryIdFromDownloadQueue(entry.id);
@@ -190,24 +197,14 @@ export const createDownloadQueueStateSlice = (
     entryId: string,
     downloadProgress: Partial<IDownloadProgress>
   ) => {
+    // `progress` is the byte count for the current attempt, so it is assigned
+    // rather than accumulated and a restart simply reports lower numbers.
     set((previous) => ({
       downloadProgressMap: {
         ...previous.downloadProgressMap,
         [entryId]: {
           ...previous.downloadProgressMap[entryId],
           ...downloadProgress,
-          progress: (() => {
-            if (!("progress" in downloadProgress)) {
-              return previous.downloadProgressMap[entryId]?.progress;
-            }
-            if (downloadProgress.progress === undefined) {
-              return 0;
-            }
-            return (
-              (previous.downloadProgressMap[entryId]?.progress || 0) +
-              (downloadProgress.progress || 0)
-            );
-          })(),
         },
       },
     }));

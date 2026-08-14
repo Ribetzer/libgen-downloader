@@ -18,4 +18,14 @@ export const DOWNLOAD_ATTEMPT_COUNT = 3;
 export const DOWNLOAD_RETRY_DELAY_MS = 2000;
 export const MAX_DOWNLOAD_MIRRORS = 2;
 
+// A mirror that answers 429 or 503 is asking for a slower pace, so those
+// retries wait far longer than an ordinary dropped connection.
+export const THROTTLE_BACKOFF_MS = [5000, 15_000, 45_000];
+export const MAX_RETRY_AFTER_MS = 60_000;
+
+// Windows refuses paths past 260 characters, so the name is budgeted against
+// the directory it lands in.
+export const MAX_PATH_LENGTH = 250;
+export const MIN_FILE_NAME_LENGTH = 40;
+
 export const SEARCH_PAGE_SIZE = 25;

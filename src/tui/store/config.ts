@@ -17,6 +17,10 @@ export interface IConfigState extends Config {
   // probe cost of a long list close to zero.
   preferredMirrorSource: string | undefined;
   unreachableMirrorSources: string[];
+  // Where downloads and the generated list files land. Resolved once at
+  // startup from the flag, the saved config, or the current directory.
+  outputDirectory: string;
+  setOutputDirectory: (outputDirectory: string) => void;
   fetchConfig: () => Promise<void>;
   switchMirror: (
     onMirrorStatus: (mirror: string, status: MirrorCheckStatus) => void
@@ -33,6 +37,7 @@ export const initialConfigState: Omit<
   | "setPreferredMirrorSource"
   | "markMirrorUnreachable"
   | "getMirrorCandidates"
+  | "setOutputDirectory"
 > = {
   mirrorAdapter: undefined,
   latestVersion: "",
@@ -40,6 +45,7 @@ export const initialConfigState: Omit<
   mirror: undefined,
   preferredMirrorSource: undefined,
   unreachableMirrorSources: [],
+  outputDirectory: process.cwd(),
 };
 
 export const createConfigStateSlice = (
@@ -124,6 +130,8 @@ export const createConfigStateSlice = (
 
     return false;
   },
+
+  setOutputDirectory: (outputDirectory: string) => set({ outputDirectory }),
 
   setPreferredMirrorSource: (mirrorSource: string | undefined) => {
     const store = get();

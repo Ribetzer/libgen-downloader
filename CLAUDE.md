@@ -76,6 +76,11 @@ Both queues delegate to one routine, `downloadByMD5()` in `src/api/data/download
 
 MD5s are always derived through `src/api/data/md5.ts` (`extractMD5` for text, `getMD5FromURL` for adapter URLs) — never by hand-slicing a string, which is how CRLF endings used to reach the query.
 
+Two invariants worth preserving:
+
+- **Progress is absolute, not incremental.** `onProgress(filename, receivedBytes, total)` reports the byte count for the *current* attempt and the stores assign it. Reintroducing deltas brings back >100% readings whenever a transfer restarts or moves mirror.
+- **Names come from `src/api/data/filename.ts`.** `buildDownloadFileName` repairs the ISO-8859-1/UTF-8 mojibake, rebuilds `Title (Year) [DOI].ext`, sanitizes for Windows, and trims the *title* so the extension always survives. The output directory (config slice, `outputDirectory`) is resolved once at startup and threaded through `downloadByMD5`; nothing should write to `./` directly.
+
 ### Failure handling
 
 Every remote call is wrapped in `attempt()` (`src/utilities.ts`): 5 tries with 2s delay by default, returns `undefined` instead of throwing. Callers check for `undefined` and surface a warning. Pass `{ attempts, delayMs }` for cheaper probes — mirror lookups use `PROBE_REQ_ATTEMPT_COUNT`.

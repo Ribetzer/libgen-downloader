@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { Writable } from "node:stream";
 import { LibgenPlusAdapter } from "../src/api/adapters/libgen-plus-adapter";
-import { downloadByMD5 } from "../src/api/data/download";
+import { downloadByMD5, readRetryAfterMs } from "../src/api/data/download";
+import { MAX_RETRY_AFTER_MS } from "../src/settings";
 import type { MirrorCandidate } from "../src/api/data/resolve";
 import { mockFetch } from "./support/fetch-mock";
 
@@ -38,16 +41,72 @@ const collectWrites = () => {
   return chunks;
 };
 
+// A directory that does not exist, so nothing is ever seen as already present.
+const OUTPUT_DIRECTORY = path.join(os.tmpdir(), "libgen-downloader-test-output");
+
 const noopCallbacks = {
+  outputDirectory: OUTPUT_DIRECTORY,
   onStart: () => {},
-  onData: () => {},
+  onProgress: () => {},
 };
 
 afterEach(() => {
   mock.restore();
 });
 
+describe("readRetryAfterMs", () => {
+  it("reads a delay given in seconds", () => {
+    expect(readRetryAfterMs("30")).toBe(30_000);
+  });
+
+  it("reads a delay given as an HTTP date", () => {
+    const inTwentySeconds = new Date(Date.now() + 20_000).toUTCString();
+    const result = readRetryAfterMs(inTwentySeconds) || 0;
+
+    expect(result).toBeGreaterThan(15_000);
+    expect(result).toBeLessThanOrEqual(20_000);
+  });
+
+  it("caps a hostile value and ignores nonsense", () => {
+    const missingHeader = new Response("").headers.get("retry-after");
+
+    expect(readRetryAfterMs("99999")).toBe(MAX_RETRY_AFTER_MS);
+    expect(readRetryAfterMs("soon")).toBeUndefined();
+    expect(readRetryAfterMs(missingHeader)).toBeUndefined();
+  });
+});
+
 describe("downloadByMD5", () => {
+  it("backs off when a mirror answers 429, then completes", async () => {
+    let fileRequestCount = 0;
+    mockFetch(async (input) => {
+      if (input.toString().includes("/ads.php")) {
+        return new Response(detailPage("first.example"));
+      }
+
+      fileRequestCount += 1;
+      if (fileRequestCount === 1) {
+        return new Response("slow down", { status: 429, headers: { "retry-after": "0" } });
+      }
+
+      return fileResponse();
+    });
+    collectWrites();
+    const retryMessages: string[] = [];
+
+    const outcome = await downloadByMD5({
+      md5: MD5,
+      candidates: [createCandidate("first.example")],
+      ...noopCallbacks,
+      onRetry: (message) => retryMessages.push(message),
+      retryDelayMs: 0,
+      throttleBackoffMs: [0, 0, 0],
+    });
+
+    expect(outcome.status).toBe("downloaded");
+    expect(retryMessages[0]).toContain("HTTP 429 (throttled)");
+  });
+
   it("restarts a dropped transfer and reports the retry", async () => {
     let fileRequestCount = 0;
     mockFetch(async (input) => {
@@ -112,7 +171,7 @@ describe("downloadByMD5", () => {
     expect(outcome.reason).toContain("first.example");
     expect(outcome.reason).toContain("book.epub");
     expect(rm).toHaveBeenCalledTimes(3);
-    expect(rm).toHaveBeenCalledWith("./book.epub", { force: true });
+    expect(rm).toHaveBeenCalledWith(path.join(OUTPUT_DIRECTORY, "book.epub"), { force: true });
   });
 
   it("moves to another mirror when one resolves but cannot serve the file", async () => {
