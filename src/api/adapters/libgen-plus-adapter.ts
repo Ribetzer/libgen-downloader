@@ -1,13 +1,79 @@
 import { Entry } from "../models/entry";
-import { Adapter } from "./adapter";
+import { Adapter, IssueQuery } from "./adapter";
 import { nanoid } from "nanoid";
 import { clearText } from "../../utilities";
+
+const EDITION_LINK_PATTERN = /edition\.php\?id=(\d+)/g;
 
 export class LibgenPlusAdapter implements Adapter {
   baseURL: string;
 
   constructor(baseURL: string) {
     this.baseURL = baseURL;
+  }
+
+  getEditionByDOIURL(doi: string): string {
+    const url = new URL("/json.php", this.baseURL);
+    url.searchParams.set("object", "e");
+    url.searchParams.set("doi", doi);
+    url.searchParams.set("fields", "*");
+    return url.toString();
+  }
+
+  getEditionsByIdsURL(editionIds: string[]): string {
+    const url = new URL("/json.php", this.baseURL);
+    url.searchParams.set("object", "e");
+    url.searchParams.set("ids", editionIds.join(","));
+    url.searchParams.set("fields", "*");
+    return url.toString();
+  }
+
+  getFilesByIdsURL(fileIds: string[]): string {
+    const url = new URL("/json.php", this.baseURL);
+    url.searchParams.set("object", "f");
+    url.searchParams.set("ids", fileIds.join(","));
+    url.searchParams.set("fields", "md5,extension,filesize");
+    return url.toString();
+  }
+
+  /**
+   * The editions tab is the only view that lists a periodical's articles;
+   * `curtab=e` selects it and the results carry no MD5s, only edition ids.
+   */
+  getIssueSearchURL({ issuesId, volume, pageNumber, pageSize }: IssueQuery): string {
+    const url = new URL("/index.php", this.baseURL);
+
+    let request = `issuesid:${issuesId}`;
+    if (volume) {
+      request += ` issuevolume:${volume}`;
+    }
+
+    url.searchParams.set("req", request);
+    url.searchParams.set("gmode", "on");
+    url.searchParams.set("topics1", "all");
+    url.searchParams.set("curtab", "e");
+    url.searchParams.set("res", pageSize.toString());
+    url.searchParams.set("page", pageNumber.toString());
+    return url.toString();
+  }
+
+  /**
+   * Every result row links to its edition from several columns, so the ids are
+   * collected in document order and de-duplicated.
+   */
+  parseEditionIds(document: Document): string[] {
+    const editionIds: string[] = [];
+
+    for (const element of document.querySelectorAll("a")) {
+      const href = element.getAttribute("href") || "";
+      for (const match of href.matchAll(EDITION_LINK_PATTERN)) {
+        if (!editionIds.includes(match[1])) {
+          editionIds.push(match[1]);
+        }
+      }
+    }
+
+    return editionIds;
   }
 
   isHiddenField(fieldName: string): boolean {

@@ -29,3 +29,8 @@ export const MAX_PATH_LENGTH = 250;
 export const MIN_FILE_NAME_LENGTH = 40;
 
 export const SEARCH_PAGE_SIZE = 25;
+
+// The editions tab honours `res` and `page`, so a periodical is collected a
+// page at a time with a cap that keeps a whole-journal query bounded.
+export const ISSUE_PAGE_SIZE = 100;
+export const MAX_ISSUE_PAGES = 20;

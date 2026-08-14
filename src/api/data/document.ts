@@ -5,6 +5,22 @@ export interface DocumentResult {
   htmlString: string;
 }
 
+export async function getJSON(url: string): Promise<unknown> {
+  try {
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    return await response.json();
+  } catch (error: unknown) {
+    throw new Error(`Error occured while fetching ${url}: ${(error as Error)?.message}`, {
+      cause: error,
+    });
+  }
+}
+
 export async function getDocument(searchURL: string): Promise<DocumentResult> {
   try {
     const response = await fetch(searchURL);

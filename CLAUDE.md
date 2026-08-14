@@ -46,6 +46,17 @@ A terminal UI (Ink + React) over LibGen's public web pages: fetch HTML → parse
 
 No mirror is hardcoded. `fetchConfig()` (`src/api/data/config.ts`) fetches `CONFIGURATION_URL` from `src/settings.ts` — `config.v3.json` on this repo's `configuration` branch — which supplies `mirrors` and `latest_version`. `findMirror()` returns the first reachable mirror; `getAdapter(src, type)` maps `mirror.type` to an adapter instance. Changing available mirrors is a config-branch edit, not a code change.
 
+### Two ways in: HTML search and the JSON API
+
+Plain text queries go through the HTML file search (`index.php` → `#tablelibgen` → `parseEntries`). DOIs and issues cannot be found that way, so they go through the mirror's JSON API instead:
+
+- `parseQuery` (`src/api/data/query.ts`) classifies the input as `doi`, `issue` or `text`; the search box and `handleSearchSubmit` both route on it.
+- `json.php?object=e&doi=…` returns the edition *with* its `files` subarray, so a DOI is one request. `--issue` scrapes only edition ids out of the editions tab (`curtab=e`, which carries no MD5s) and then batches them into `json.php?object=e&ids=…`.
+- Responses are keyed by id at both levels and answer `[]` or `{"error": …}` for a miss, which is why `parseEditionsJSON` is deliberately tolerant. Real captured responses live in `test/fixtures/` — regenerate them from a machine that can reach libgen rather than hand-editing.
+- `buildEntriesFromEditions` converts records into the same `Entry` shape the HTML search produces, so lookups reuse the result list, detail view and both download queues unchanged.
+
+`db.md` and `json.md` in the repo root are LibGen's own database and API documentation, kept as reference for this layer.
+
 ### Adapter layer (`src/api/adapters/`)
 
 Everything mirror-specific — URL shapes, DOM selectors, connection-error detection, field formatting — sits behind the abstract `Adapter` class. `LibgenPlusAdapter` is currently the only implementation. Nothing outside this directory should know LibGen's HTML or URL structure; the rest of the app goes through `store.mirrorAdapter?.…` (optional, because config may not have loaded yet).

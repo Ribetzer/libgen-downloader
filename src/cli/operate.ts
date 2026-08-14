@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describeResolveFailure } from "../api/data/download";
+import { getEditionMD5s, normalizeDOI } from "../api/data/edition";
 import { parseMD5List } from "../api/data/file";
+import { lookupEditionByDOI, lookupIssueEditions, LookupResult } from "../api/data/lookup";
 import { getMD5FromURL } from "../api/data/md5";
 import { resolveDownloadURL } from "../api/data/resolve";
 import {
@@ -33,6 +35,41 @@ const applyOutputDirectory = async (flags: Record<string, unknown>) => {
 
   useBoundStore.getState().setOutputDirectory(directory);
   return directory;
+};
+
+const buildLookupArguments = () => {
+  const store = useBoundStore.getState();
+
+  return {
+    candidates: store.getMirrorCandidates(),
+    onMirrorUnreachable: (mirrorSource: string) => {
+      store.markMirrorUnreachable(mirrorSource);
+    },
+  };
+};
+
+const describeLookupFailure = (
+  result: Exclude<LookupResult, { status: "found" }>,
+  notFoundMessage: string
+): string => {
+  if (result.status === "unreachable") {
+    return `Couldn't reach any mirror (${result.checkedMirrors.join(", ")})`;
+  }
+
+  return `${notFoundMessage} on any mirror (${result.checkedMirrors.join(", ")})`;
+};
+
+/**
+ * Every list of MD5s, however it was gathered, goes through the same bulk queue
+ * so failover, backoff, naming and the failure report apply unchanged.
+ */
+const startBulkDownload = (md5List: string[]) => {
+  renderTUI({
+    startInCLIMode: true,
+    doNotFetchConfigInitially: true,
+    initialLayout: LAYOUT_KEY.BULK_DOWNLOAD_LAYOUT,
+  });
+  useBoundStore.getState().startBulkDownloadInCLI(md5List);
 };
 
 /**
@@ -110,6 +147,102 @@ const runFlags = async (flags: Record<string, unknown>) => {
       doNotFetchConfigInitially: true,
     });
     store.handleSearchSubmit();
+    return;
+  }
+
+  if (flags.doi) {
+    const doi = normalizeDOI(flags.doi as string);
+    if (!doi) {
+      console.log(`"${flags.doi}" is not a DOI`);
+      process.exitCode = 1;
+      return;
+    }
+
+    if (!(await fetchConfigAndCheckMirror())) {
+      return;
+    }
+
+    console.log(`Looking up ${doi}...`);
+    const result = await lookupEditionByDOI(doi, buildLookupArguments());
+
+    if (result.status !== "found") {
+      console.log(describeLookupFailure(result, `No record for ${doi}`));
+      process.exitCode = 1;
+      return;
+    }
+
+    const md5List: string[] = [];
+    for (const record of result.records) {
+      console.log(`${record.title} (${record.year})`);
+      if (record.files.length === 0) {
+        console.log("  no file attached to this record");
+        continue;
+      }
+
+      md5List.push(record.files[0].md5);
+      if (record.files.length > 1) {
+        console.log(`  ${record.files.length} files attached, taking the first`);
+      }
+    }
+
+    if (md5List.length === 0) {
+      console.log("Nothing to download");
+      process.exitCode = 1;
+      return;
+    }
+
+    startBulkDownload(md5List);
+    return;
+  }
+
+  if (flags.issue) {
+    const issuesId = (flags.issue as string).trim();
+    if (!/^\d+$/.test(issuesId)) {
+      console.log(`"${flags.issue}" is not an issues id`);
+      process.exitCode = 1;
+      return;
+    }
+
+    const volume = (flags.volume as string | undefined)?.trim();
+
+    if (!(await fetchConfigAndCheckMirror())) {
+      return;
+    }
+
+    let scope = `issuesid:${issuesId}`;
+    if (volume) {
+      scope += ` volume ${volume}`;
+    }
+    console.log(`Collecting editions for ${scope}`);
+    const result = await lookupIssueEditions({
+      issuesId,
+      volume,
+      ...buildLookupArguments(),
+      onPage: (pageNumber, editionCount) => {
+        console.log(`  page ${pageNumber}: ${editionCount} editions so far`);
+      },
+    });
+
+    if (result.status !== "found") {
+      console.log(describeLookupFailure(result, "No editions found"));
+      process.exitCode = 1;
+      return;
+    }
+
+    const md5List = getEditionMD5s(result.records);
+    const withoutFiles = result.records.filter((record) => record.files.length === 0).length;
+    console.log(`${result.records.length} editions, ${md5List.length} files`);
+    if (withoutFiles > 0) {
+      console.log(`${withoutFiles} editions have no file and are skipped`);
+    }
+
+    if (md5List.length === 0) {
+      console.log("Nothing to download");
+      process.exitCode = 1;
+      return;
+    }
+
+    startBulkDownload(md5List);
     return;
   }
 

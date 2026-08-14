@@ -26,6 +26,8 @@ export default {
   NEXT_PAGE_CHECKING: "→ Next Page",
   NEXT_PAGE_ERROR: "→ Next Page (?) (Retry)",
   NEXT_PAGE_UNAVAILABLE: "→ Next Page (no results on next page)",
+  NO_LOOKUP_RESULTS: "No record found on any mirror",
+  NO_FILES_FOR_RECORD: "Record found, but it has no file attached",
   RETRY: "↻ Retry",
   YES: "Yes",
   NO: "No",

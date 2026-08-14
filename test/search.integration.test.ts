@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
+import fs from "node:fs";
+import path from "node:path";
 import { LibgenPlusAdapter } from "../src/api/adapters/libgen-plus-adapter";
+import { mockFetch } from "./support/fetch-mock";
 import type { Entry } from "../src/api/models/entry";
 import Label from "../src/labels";
 import { initialAppState } from "../src/tui/store/app";
@@ -12,6 +15,8 @@ import { LAYOUT_KEY } from "../src/tui/layouts/keys";
 
 const BASE_URL = "https://libgen.example/";
 const originalStoreState = useBoundStore.getState();
+const readFixture = (name: string) =>
+  fs.readFileSync(path.join(import.meta.dir, "fixtures", name), "utf8");
 
 const entry: Entry = {
   id: "cached-entry",
@@ -141,6 +146,48 @@ describe("search integration", () => {
     const state = useBoundStore.getState();
     expect(state.connectionError).toBe("Active mirror failed");
     expect(state.errorMessage).toBe(Label.ALL_MIRRORS_FAILED);
+    expect(state.isLoading).toBe(false);
+  });
+
+  it("routes a pasted DOI through the JSON API instead of the file search", async () => {
+    const search = mock(async () => ({ status: "success" as const, entries: [] }));
+    const { requestedURLs } = mockFetch(async (input) => {
+      if (input.toString().includes("object=f")) {
+        return new Response(readFixture("file-details.json"));
+      }
+
+      return new Response(readFixture("edition-by-doi.json"));
+    });
+    useBoundStore.setState({ searchValue: "https://doi.org/10.1080/2165347X.2013.870057", search });
+
+    await useBoundStore.getState().handleSearchSubmit();
+
+    const state = useBoundStore.getState();
+    expect(search).not.toHaveBeenCalled();
+    expect(state.activeLayout).toBe(LAYOUT_KEY.RESULT_LIST_LAYOUT);
+    expect(state.entries).toHaveLength(1);
+    expect(state.entries[0]).toMatchObject({
+      title:
+        "Fast Relabeling of Deformable Delaunay Tetrahedral Meshes Using a Compact Uniform Grid",
+      extension: "pdf",
+      mirror: `${BASE_URL}ads.php?md5=e9a3bcfba6664166a0a12bcfe57b6d67`,
+    });
+    expect(state.isLoading).toBe(false);
+    // No paging for a lookup: one record is the whole result.
+    expect(state.nextPageStatus).toBe("unavailable");
+    expect(requestedURLs[0]).toContain("json.php?object=e&doi=");
+  });
+
+  it("reports a DOI that no mirror carries without falling back to a text search", async () => {
+    const search = mock(async () => ({ status: "success" as const, entries: [entry] }));
+    mockFetch(async () => new Response("[]"));
+    useBoundStore.setState({ searchValue: "10.1080/does.not.exist", search });
+
+    await useBoundStore.getState().handleSearchSubmit();
+
+    const state = useBoundStore.getState();
+    expect(search).not.toHaveBeenCalled();
+    expect(state.entries).toEqual([]);
     expect(state.isLoading).toBe(false);
   });
 

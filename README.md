@@ -78,6 +78,26 @@ chmod +x ./libgen-downloader-linux-*
 
   ```
 
+## Finding things by DOI or issue
+
+A DOI or one of LibGen's `issuesid:` expressions can go straight into the search
+box, or be used from the command line:
+
+```
+$ libgen-downloader --doi 10.1080/2165347X.2013.870057
+$ libgen-downloader --issue 13647 --volume 17
+```
+
+Both resolve through the mirror's JSON API (`json.php`), because neither a DOI
+nor an issue is findable in the file search. `--doi` accepts a bare DOI,
+`doi:10.…` or a `https://doi.org/…` URL, and the lookup is case-insensitive.
+`--issue` takes a series id, optionally narrowed with `--volume`, and queues
+every file in it through the normal bulk download.
+
+In the interactive search box the same inputs work: paste a DOI, or type
+`issuesid:13647 issuevolume:17`, and the results list fills with that record's
+files, ready to download or add to the bulk queue.
+
 ## MD5 list files
 
 `-b, --bulk` takes a plain text file holding one MD5 per line:

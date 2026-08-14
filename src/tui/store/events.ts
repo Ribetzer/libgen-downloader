@@ -5,6 +5,12 @@ import { Entry } from "../../api/models/entry";
 import { SEARCH_PAGE_SIZE } from "../../settings";
 import { attempt } from "../../utilities";
 import { getDocument } from "../../api/data/document";
+import { buildEntriesFromEditions } from "../../api/data/edition-entry";
+import { lookupEditionByDOI, lookupFileDetails, lookupIssueEditions } from "../../api/data/lookup";
+import type { LookupResult } from "../../api/data/lookup";
+import { parseQuery } from "../../api/data/query";
+import type { ParsedQuery } from "../../api/data/query";
+import type { MirrorCandidate } from "../../api/data/resolve";
 
 export type SearchResult =
   | { status: "success"; entries: Entry[] }
@@ -14,12 +20,33 @@ export type SearchResult =
 export interface IEventActions {
   backToSearch: () => void;
   search: (query: string, page: number) => Promise<SearchResult>;
+  handleLookupSubmit: (parsedQuery: ParsedQuery) => Promise<boolean>;
   checkNextPage: (query: string, pageNumber: number) => void;
   handleSearchSubmit: () => Promise<void>;
   nextPage: () => Promise<void>;
   prevPage: () => Promise<void>;
   handleExit: (exitCode?: number) => void;
 }
+
+interface LookupArguments {
+  candidates: MirrorCandidate[];
+  onMirrorUnreachable: (mirrorSource: string) => void;
+}
+
+const runLookup = async (
+  parsedQuery: Exclude<ParsedQuery, { kind: "text" }>,
+  lookupArguments: LookupArguments
+): Promise<LookupResult> => {
+  if (parsedQuery.kind === "doi") {
+    return lookupEditionByDOI(parsedQuery.doi, lookupArguments);
+  }
+
+  return lookupIssueEditions({
+    issuesId: parsedQuery.issuesId,
+    volume: parsedQuery.volume,
+    ...lookupArguments,
+  });
+};
 
 export const createEventActionsSlice = (
   _set: (
@@ -85,10 +112,59 @@ export const createEventActionsSlice = (
       currentStore.setEntries(currentStore.entries);
     });
   },
+  /**
+   * A DOI or an `issuesid:` expression resolves through the JSON API instead of
+   * the file search, since neither is findable in the files table.
+   */
+  handleLookupSubmit: async (parsedQuery: ParsedQuery): Promise<boolean> => {
+    const store = get();
+
+    if (parsedQuery.kind === "text") {
+      return false;
+    }
+
+    store.setActiveLayout(LAYOUT_KEY.RESULT_LIST_LAYOUT);
+    store.setIsLoading(true);
+    store.setLoaderMessage(Label.GETTING_RESULTS);
+
+    const lookupArguments = {
+      candidates: store.getMirrorCandidates(),
+      onMirrorUnreachable: (mirrorSource: string) => {
+        get().markMirrorUnreachable(mirrorSource);
+      },
+    };
+
+    const result = await runLookup(parsedQuery, lookupArguments);
+
+    store.setIsLoading(false);
+    store.setNextPageStatus("unavailable");
+
+    if (result.status !== "found") {
+      store.setEntries([]);
+      store.setWarningMessage(Label.NO_LOOKUP_RESULTS);
+      return true;
+    }
+
+    const fileDetails = await lookupFileDetails(result.candidate, result.records);
+    const entries = buildEntriesFromEditions(result.records, fileDetails, result.candidate.adapter);
+
+    if (entries.length === 0) {
+      store.setWarningMessage(Label.NO_FILES_FOR_RECORD);
+    }
+
+    store.setEntries(entries);
+    return true;
+  },
+
   handleSearchSubmit: async () => {
     const store = get();
 
     if (store.searchValue.length < 3) {
+      return;
+    }
+
+    const parsedQuery = parseQuery(store.searchValue);
+    if (await store.handleLookupSubmit(parsedQuery)) {
       return;
     }
 

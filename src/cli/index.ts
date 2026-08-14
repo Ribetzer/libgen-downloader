@@ -10,6 +10,9 @@ export const cli = meow(
     -b, --bulk <MD5LIST.txt>  start the app in bulk downloading mode
     -u, --url <MD5>           get the download URL
     -d, --download <MD5>      download the file
+    --doi <DOI>               download the article with this DOI
+    --issue <ISSUESID>        download a periodical, filtered by --volume
+    --volume <VOLUME>         volume to use with --issue
     -o, --output <DIR>        download into DIR for this run
     --set-output <DIR>        remember DIR as the download folder and exit
     -h, --help                display help
@@ -22,6 +25,8 @@ export const cli = meow(
     $ libgen-downloader -d 1234567890abcdef1234567890abcdef
     $ libgen-downloader --set-output C:\\Papers
     $ libgen-downloader -o ./downloads -b ./MD5_LIST.txt
+    $ libgen-downloader --doi 10.1080/2165347X.2013.870057
+    $ libgen-downloader --issue 13647 --volume 17
 `,
   {
     importMeta: import.meta,
@@ -41,6 +46,15 @@ export const cli = meow(
       download: {
         type: "string",
         shortFlag: "d",
+      },
+      doi: {
+        type: "string",
+      },
+      issue: {
+        type: "string",
+      },
+      volume: {
+        type: "string",
       },
       output: {
         type: "string",
