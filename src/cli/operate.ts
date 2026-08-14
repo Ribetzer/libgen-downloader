@@ -1,12 +1,54 @@
-// eslint-disable-next-line unicorn/prefer-node-protocol
-import fs from "fs";
-import { getDocument } from "../api/data/document";
+import fs from "node:fs";
+import { describeResolveFailure } from "../api/data/download";
+import { parseMD5List } from "../api/data/file";
+import { getMD5FromURL } from "../api/data/md5";
+import { resolveDownloadURL } from "../api/data/resolve";
 import renderTUI from "../tui/index";
 import { LAYOUT_KEY } from "../tui/layouts/keys";
 import { useBoundStore } from "../tui/store/index";
-import { attempt } from "../utilities";
 
+const MAX_REPORTED_INVALID_LINES = 5;
+
+/**
+ * `fetchConfig` reports its own failures through the store, and the snapshot
+ * taken before it ran is stale, so the result has to be read back fresh.
+ */
+const fetchConfigAndCheckMirror = async () => {
+  await useBoundStore.getState().fetchConfig();
+
+  if (useBoundStore.getState().mirror) {
+    return true;
+  }
+
+  console.log("Couldn't reach any LibGen mirror. Nothing to download from, try again later.");
+  process.exitCode = 1;
+  return false;
+};
+
+const readMD5ListFile = async (filePath: string) => {
+  try {
+    const contents = await fs.promises.readFile(filePath, "utf8");
+    return parseMD5List(contents);
+  } catch (error: unknown) {
+    console.log(`Couldn't read "${filePath}": ${(error as Error)?.message}`);
+    return;
+  }
+};
+
+/**
+ * Nothing awaits `operate`, so an unhandled rejection here would surface as a
+ * bare stack trace on top of the rendered UI.
+ */
 export const operate = async (flags: Record<string, unknown>) => {
+  try {
+    await runFlags(flags);
+  } catch (error: unknown) {
+    console.log((error as Error)?.message || "Unexpected error");
+    process.exitCode = 1;
+  }
+};
+
+const runFlags = async (flags: Record<string, unknown>) => {
   if (flags.search) {
     const query = flags.search as string;
     if (query.length < 3) {
@@ -27,10 +69,37 @@ export const operate = async (flags: Record<string, unknown>) => {
 
   if (flags.bulk) {
     const filePath = flags.bulk as string;
-    const data = await fs.promises.readFile(filePath, "utf8");
-    const md5List = data.split("\n").filter((line) => line.trim());
+
+    const parseResult = await readMD5ListFile(filePath);
+    if (!parseResult) {
+      return;
+    }
+
+    const { md5List, invalidLines, preferredMirror } = parseResult;
+
+    for (const invalidLine of invalidLines.slice(0, MAX_REPORTED_INVALID_LINES)) {
+      console.log(`Skipping line ${invalidLine.lineNumber}, no MD5 found: ${invalidLine.content}`);
+    }
+    if (invalidLines.length > MAX_REPORTED_INVALID_LINES) {
+      console.log(`...and ${invalidLines.length - MAX_REPORTED_INVALID_LINES} more skipped lines`);
+    }
+
+    if (md5List.length === 0) {
+      console.log(
+        `No MD5 found in "${filePath}". The file should hold one 32 character MD5 per line and be saved as plain UTF-8 text.`
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    if (!(await fetchConfigAndCheckMirror())) {
+      return;
+    }
+
     const store = useBoundStore.getState();
-    await store.fetchConfig();
+    // The list records the mirror it came from, and catalogues differ between
+    // mirrors, so that one is worth trying first.
+    store.setPreferredMirrorSource(preferredMirror);
     renderTUI({
       startInCLIMode: true,
       doNotFetchConfigInitially: true,
@@ -41,44 +110,51 @@ export const operate = async (flags: Record<string, unknown>) => {
   }
 
   if (flags.url) {
-    const md5 = flags.url as string;
+    const md5 = getMD5FromURL(flags.url as string);
+    if (!md5) {
+      console.log(`"${flags.url}" is not an MD5`);
+      process.exitCode = 1;
+      return;
+    }
 
     console.log("Fetching config...");
     await useBoundStore.getState().fetchConfig();
     const store = useBoundStore.getState();
 
     console.log("Finding download url...");
-    const detailPageUrl = store.mirrorAdapter?.getDetailPageURL(md5);
-    if (!detailPageUrl) {
-      console.log("Failed to get detail page URL");
-      return;
-    }
+    const resolveResult = await resolveDownloadURL({
+      md5,
+      candidates: store.getMirrorCandidates(),
+      onMirrorTry: (mirrorSource) => {
+        console.log(`Looking up ${mirrorSource}`);
+      },
+    });
 
-    const detailPageResult = await attempt(() => getDocument(detailPageUrl));
-    if (!detailPageResult) {
-      console.log("Failed to get detail page document");
-      return;
-    }
-
-    const downloadUrl = store.mirrorAdapter?.getMainDownloadURLFromDocument(
-      detailPageResult.document
-    );
-    if (!downloadUrl) {
-      console.log("Failed to find download url");
+    if (resolveResult.status !== "resolved") {
+      console.log(`No download url for ${md5}: ${describeResolveFailure(resolveResult)}`);
       return;
     }
 
     console.log("Here is the direct download link:");
-    console.log(downloadUrl);
+    console.log(resolveResult.downloadURL);
 
     return;
   }
 
   if (flags.download) {
-    const md5 = flags.download as string;
+    const md5 = getMD5FromURL(flags.download as string);
+    if (!md5) {
+      console.log(`"${flags.download}" is not an MD5`);
+      process.exitCode = 1;
+      return;
+    }
+
+    if (!(await fetchConfigAndCheckMirror())) {
+      return;
+    }
+
     const md5List = [md5];
     const store = useBoundStore.getState();
-    await store.fetchConfig();
     renderTUI({
       startInCLIMode: true,
       doNotFetchConfigInitially: true,

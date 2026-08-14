@@ -18,7 +18,7 @@ export interface IEventActions {
   handleSearchSubmit: () => Promise<void>;
   nextPage: () => Promise<void>;
   prevPage: () => Promise<void>;
-  handleExit: () => void;
+  handleExit: (exitCode?: number) => void;
 }
 
 export const createEventActionsSlice = (
@@ -224,8 +224,8 @@ export const createEventActionsSlice = (
     store.setIsLoading(false);
   },
 
-  handleExit: () => {
+  handleExit: (exitCode?: number) => {
     // eslint-disable-next-line unicorn/no-process-exit
-    process.exit(0);
+    process.exit(exitCode || 0);
   },
 });

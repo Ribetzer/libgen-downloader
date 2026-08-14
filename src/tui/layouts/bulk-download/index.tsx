@@ -13,6 +13,7 @@ export function BulkDownload() {
   const failedBulkDownloadItemCount = useBoundStore((state) => state.failedBulkDownloadItemCount);
   const createdMD5ListFileName = useBoundStore((state) => state.createdMD5ListFileName);
   const CLIMode = useBoundStore((state) => state.CLIMode);
+  const activeMirrorSource = useBoundStore((state) => state.mirror?.src);
   const totalItemCount = bulkDownloadQueue.length;
 
   return (
@@ -52,6 +53,10 @@ export function BulkDownload() {
               </Text>
             )}
             {!item.filename && !item.md5 && <Text color="gray">-</Text>}
+            {item.error && <Text color="gray"> — {item.error}</Text>}
+            {!item.error && item.mirror && item.mirror !== activeMirrorSource && (
+              <Text color="gray"> — via {item.mirror}</Text>
+            )}
           </Text>
         ))}
 

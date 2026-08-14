@@ -5,6 +5,7 @@ export enum DownloadStatus {
   IN_QUEUE = "IN_QUEUE",
   PROCESSING = "PROCESSING",
   DOWNLOADING = "DOWNLOADING",
+  RETRYING = "RETRYING",
   DOWNLOADED = "DOWNLOADED",
   FAILED = "FAILED",
   CONNECTING_TO_LIBGEN = "CONNECTING_TO_LIBGEN",
@@ -29,6 +30,12 @@ export const downloadStatusIndicators = {
     <Text color="blueBright" inverse={true}>
       {" "}
       DOWNLOADING{" "}
+    </Text>
+  ),
+  [DownloadStatus.RETRYING]: (
+    <Text color="yellowBright" inverse={true}>
+      {" "}
+      RETRYING{" "}
     </Text>
   ),
   [DownloadStatus.DOWNLOADED]: (

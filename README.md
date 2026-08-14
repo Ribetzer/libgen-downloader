@@ -45,6 +45,12 @@ chmod +x ./libgen-downloader-linux-*
 - Non app blocking direct downloading.
 - Bulk downloading.
 - Alternative download options.
+- Mirror failover for downloads. Every LibGen instance keeps its own catalogue,
+  so an MD5 that is missing from the active mirror is looked up on the others
+  before it is reported as failed. The mirror that served a file is tried first
+  for the rest of the run, and a failed row states why it failed.
+- Interrupted transfers are restarted a few times, and a truncated file is
+  removed instead of being left behind as a half-written download.
 - Command line parameters;
   ```
   Usage
@@ -66,7 +72,28 @@ chmod +x ./libgen-downloader-linux-*
 
   ```
 
+## MD5 list files
 
+`-b, --bulk` takes a plain text file holding one MD5 per line:
+
+```
+# mirror: https://libgen.li/
+b7abef3d085a1007a137a247dcff8dcb
+108804c7a0e8c28c31071f2c34269570
+```
+
+- Windows (CRLF) and Unix (LF) line endings both work, as does a UTF-8 byte
+  order mark, so a file written in Notepad is fine. Save it as plain text,
+  not UTF-16.
+- Blank lines and `#` comments are ignored, duplicates are dropped, and a full
+  detail page URL is accepted in place of a bare hash.
+- A line without a 32 character MD5 is reported and skipped instead of being
+  turned into a request that can only fail.
+- The `# mirror:` header is written into the list the app generates after a
+  bulk download, and it is the first mirror consulted when that list is fed
+  back in.
+- The command exits with status `1` if any item failed, so a scripted run can
+  tell a clean sweep from a partial one.
 
 ## Changelogs
 

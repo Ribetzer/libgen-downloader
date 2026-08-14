@@ -1,16 +1,17 @@
 import { TCombinedStore } from "./index";
 import { Entry } from "../../api/models/entry";
 import { DownloadStatus } from "../../download-statuses";
-import { attempt } from "../../utilities";
 import { LAYOUT_KEY } from "../layouts/keys";
 import { IDownloadProgress } from "./download-queue";
-import { getDocument } from "../../api/data/document";
-import { downloadFile } from "../../api/data/download";
+import { downloadByMD5 } from "../../api/data/download";
 import { createMD5ListFile } from "../../api/data/file";
+import { getMD5FromURL } from "../../api/data/md5";
 import objectHash from "object-hash";
 
 export interface IBulkDownloadQueueItem extends IDownloadProgress {
   md5: string;
+  error?: string;
+  mirror?: string;
 }
 
 export interface IBulkDownloadQueueState {
@@ -29,8 +30,9 @@ export interface IBulkDownloadQueueState {
   onBulkQueueItemProcessing: (index: number) => void;
   onBulkQueueItemStart: (index: number, filename: string, total: number) => void;
   onBulkQueueItemData: (index: number, filename: string, chunk: Buffer, total: number) => void;
-  onBulkQueueItemComplete: (index: number) => void;
-  onBulkQueueItemFail: (index: number) => void;
+  onBulkQueueItemRetry: (index: number, message: string) => void;
+  onBulkQueueItemComplete: (index: number, mirrorSource?: string) => void;
+  onBulkQueueItemFail: (index: number, error?: string) => void;
   operateBulkDownloadQueue: () => Promise<void>;
   startBulkDownload: () => Promise<void>;
   startBulkDownloadInCLI: (md5List: string[]) => Promise<void>;
@@ -144,7 +146,26 @@ export const createBulkDownloadQueueStateSlice = (
     }));
   },
 
-  onBulkQueueItemComplete: (index: number) => {
+  onBulkQueueItemRetry: (index: number, message: string) => {
+    set((previous) => ({
+      bulkDownloadQueue: previous.bulkDownloadQueue.map((item, index_) => {
+        if (index !== index_) {
+          return item;
+        }
+
+        // The transfer restarts from the beginning, so the accumulated
+        // progress has to go with it.
+        return {
+          ...item,
+          progress: 0,
+          status: DownloadStatus.RETRYING,
+          error: message,
+        };
+      }),
+    }));
+  },
+
+  onBulkQueueItemComplete: (index: number, mirrorSource?: string) => {
     set((previous) => ({
       bulkDownloadQueue: previous.bulkDownloadQueue.map((item, index_) => {
         if (index !== index_) {
@@ -154,6 +175,8 @@ export const createBulkDownloadQueueStateSlice = (
         return {
           ...item,
           status: DownloadStatus.DOWNLOADED,
+          error: undefined,
+          mirror: mirrorSource,
         };
       }),
     }));
@@ -163,7 +186,7 @@ export const createBulkDownloadQueueStateSlice = (
     }));
   },
 
-  onBulkQueueItemFail: (index: number) => {
+  onBulkQueueItemFail: (index: number, error?: string) => {
     set((previous) => ({
       bulkDownloadQueue: previous.bulkDownloadQueue.map((item, index_) => {
         if (index !== index_) {
@@ -173,6 +196,7 @@ export const createBulkDownloadQueueStateSlice = (
         return {
           ...item,
           status: DownloadStatus.FAILED,
+          error,
         };
       }),
     }));
@@ -185,53 +209,33 @@ export const createBulkDownloadQueueStateSlice = (
   operateBulkDownloadQueue: async () => {
     const bulkDownloadQueue = get().bulkDownloadQueue;
     for (const [index, item] of bulkDownloadQueue.entries()) {
-      const detailPageUrl = get().mirrorAdapter?.getDetailPageURL(item.md5);
-      if (!detailPageUrl) {
-        get().setWarningMessage(`Couldn't get the detail page URL for ${item.md5}`);
-        get().onBulkQueueItemFail(index);
-        continue;
-      }
-
       get().onBulkQueueItemProcessing(index);
 
-      const detailPageResult = await attempt(() => getDocument(detailPageUrl));
-      if (!detailPageResult) {
-        get().setWarningMessage(`Couldn't fetch the detail page for ${item.md5}`);
-        get().onBulkQueueItemFail(index);
+      const outcome = await downloadByMD5({
+        md5: item.md5,
+        candidates: get().getMirrorCandidates(),
+        onStart: (filename, total) => {
+          get().onBulkQueueItemStart(index, filename, total);
+        },
+        onData: (filename, chunk, total) => {
+          get().onBulkQueueItemData(index, filename, chunk, total);
+        },
+        onMirrorUnreachable: (mirrorSource) => {
+          get().markMirrorUnreachable(mirrorSource);
+        },
+        onRetry: (message) => {
+          get().onBulkQueueItemRetry(index, message);
+        },
+      });
+
+      if (outcome.status === "failed") {
+        get().setWarningMessage(`${item.md5}: ${outcome.reason}`);
+        get().onBulkQueueItemFail(index, outcome.reason);
         continue;
       }
 
-      const downloadUrl = get().mirrorAdapter?.getMainDownloadURLFromDocument(
-        detailPageResult.document
-      );
-      if (!downloadUrl) {
-        get().setWarningMessage(`Couldn't find the download url for ${item.md5}`);
-        get().onBulkQueueItemFail(index);
-        continue;
-      }
-
-      const downloadStream = await attempt(() => fetch(downloadUrl));
-      if (!downloadStream) {
-        get().setWarningMessage(`Couldn't fetch the download stream for ${item.md5}`);
-        get().onBulkQueueItemFail(index);
-        continue;
-      }
-
-      try {
-        await downloadFile({
-          downloadStream,
-          onStart: (filename, total) => {
-            get().onBulkQueueItemStart(index, filename, total);
-          },
-          onData: (filename, chunk, total) => {
-            get().onBulkQueueItemData(index, filename, chunk, total);
-          },
-        });
-
-        get().onBulkQueueItemComplete(index);
-      } catch {
-        get().onBulkQueueItemFail(index);
-      }
+      get().setPreferredMirrorSource(outcome.mirror.src);
+      get().onBulkQueueItemComplete(index, outcome.mirror.src);
     }
 
     set({
@@ -243,7 +247,10 @@ export const createBulkDownloadQueueStateSlice = (
       .map((item) => item.md5);
 
     try {
-      const filename = await createMD5ListFile(completedMD5List);
+      const filename = await createMD5ListFile(
+        completedMD5List,
+        get().preferredMirrorSource || get().mirror?.src
+      );
       set({
         createdMD5ListFileName: filename,
       });
@@ -275,8 +282,7 @@ export const createBulkDownloadQueueStateSlice = (
         continue;
       }
 
-      const urlObject = new URL(detailPageURL);
-      const md5 = urlObject.searchParams.get("md5");
+      const md5 = getMD5FromURL(detailPageURL);
       if (!md5) {
         get().setWarningMessage(`Couldn't find MD5 for entry ${entry.id}`);
         continue;
@@ -311,8 +317,13 @@ export const createBulkDownloadQueueStateSlice = (
 
     await get().operateBulkDownloadQueue();
 
-    // process exit successfully
-    get().handleExit();
+    // A scripted run needs to be able to tell a clean sweep from a partial one.
+    let exitCode = 0;
+    if (get().failedBulkDownloadItemCount > 0) {
+      exitCode = 1;
+    }
+
+    get().handleExit(exitCode);
   },
 
   resetBulkDownloadQueue: () => {

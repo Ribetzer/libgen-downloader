@@ -9,20 +9,10 @@ import { initialBulkDownloadQueueState } from "../src/tui/store/bulk-download-qu
 import { initialConfigState } from "../src/tui/store/config";
 import { initialDownloadQueueState } from "../src/tui/store/download-queue";
 import { useBoundStore } from "../src/tui/store";
+import { getRequestURL, mockFetch } from "./support/fetch-mock";
 
 const BASE_URL = "https://libgen.example/";
 const originalStoreState = useBoundStore.getState();
-
-const getRequestURL = (input: RequestInfo | URL): string => {
-  switch (true) {
-    case input instanceof Request: {
-      return input.url;
-    }
-    default: {
-      return input.toString();
-    }
-  }
-};
 
 const createEntry = (id: string, md5: string): Entry => ({
   id,
@@ -235,6 +225,87 @@ describe("bulk download integration", () => {
     expect(writeFile.mock.calls[0]?.[0].toString()).toMatch(
       /^\.\/libgen_downloader_md5_list_\d+\.txt$/
     );
-    expect(writeFile.mock.calls[0]?.[1]).toBe("success");
+    expect(writeFile.mock.calls[0]?.[1]).toBe(`# mirror: ${BASE_URL}\nsuccess`);
+  });
+
+  it("records why an item failed instead of leaving a bare FAILED row", async () => {
+    installNetworkFixture();
+    installFilesystemFixture();
+    useBoundStore.setState({
+      bulkDownloadQueue: [
+        {
+          md5: "missing",
+          filename: "",
+          total: 0,
+          progress: 0,
+          status: DownloadStatus.IN_QUEUE,
+        },
+      ],
+    });
+
+    await useBoundStore.getState().operateBulkDownloadQueue();
+
+    const item = useBoundStore.getState().bulkDownloadQueue[0];
+    expect(item?.status).toBe(DownloadStatus.FAILED);
+    expect(item?.error).toBe("not found on any mirror (libgen.example)");
+  });
+
+  it("falls back to another mirror and prefers it for the rest of the run", async () => {
+    const SECOND_URL = "https://second.example/";
+    const firstMD5 = "b7abef3d085a1007a137a247dcff8dcb";
+    const secondMD5 = "108804c7a0e8c28c31071f2c34269570";
+    const { requestedURLs } = mockFetch(async (input) => {
+      const url = getRequestURL(input);
+
+      if (url.startsWith(SECOND_URL) && url.includes("/ads.php")) {
+        return new Response(
+          '<table id="main"><tr><td>Book</td><td><a href="/files/book.epub">GET</a></td></tr></table>'
+        );
+      }
+
+      if (url.startsWith(SECOND_URL)) {
+        return new Response("downloaded content", {
+          headers: {
+            "content-disposition": 'attachment; filename="book.epub"',
+            "content-length": "18",
+          },
+        });
+      }
+
+      // The active mirror simply doesn't carry these records.
+      return new Response("<html>no record</html>");
+    });
+    const { writeFile } = installFilesystemFixture();
+
+    useBoundStore.setState({
+      mirrors: [
+        { src: BASE_URL, type: "libgen-plus" },
+        { src: SECOND_URL, type: "libgen-plus" },
+      ],
+      bulkDownloadQueue: [firstMD5, secondMD5].map((md5) => ({
+        md5,
+        filename: "",
+        total: 0,
+        progress: 0,
+        status: DownloadStatus.IN_QUEUE,
+      })),
+    });
+
+    await useBoundStore.getState().operateBulkDownloadQueue();
+
+    const state = useBoundStore.getState();
+    expect(state.completedBulkDownloadItemCount).toBe(2);
+    expect(state.failedBulkDownloadItemCount).toBe(0);
+    expect(state.bulkDownloadQueue.map((item) => item.mirror)).toEqual([SECOND_URL, SECOND_URL]);
+    expect(state.preferredMirrorSource).toBe(SECOND_URL);
+    // The second item skips the mirror that already came up empty.
+    expect(requestedURLs).toEqual([
+      `${BASE_URL}ads.php?md5=${firstMD5}`,
+      `${SECOND_URL}ads.php?md5=${firstMD5}`,
+      `${SECOND_URL}files/book.epub`,
+      `${SECOND_URL}ads.php?md5=${secondMD5}`,
+      `${SECOND_URL}files/book.epub`,
+    ]);
+    expect(writeFile.mock.calls[0]?.[1]).toBe(`# mirror: ${SECOND_URL}\n${firstMD5}\n${secondMD5}`);
   });
 });

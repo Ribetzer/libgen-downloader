@@ -17,13 +17,22 @@ export function delay(ms: number): Promise<void> {
   });
 }
 
+export interface AttemptOptions {
+  attempts?: number;
+  delayMs?: number;
+}
+
 export async function attempt<T>(
   callback: () => Promise<T>,
   onFail?: (message: string) => void,
   onError?: (message: string) => void,
-  onComplete?: () => void
+  onComplete?: () => void,
+  options?: AttemptOptions
 ): Promise<T | undefined> {
-  for (let index = 0; index < FAIL_REQ_ATTEMPT_COUNT; index++) {
+  const attempts = options?.attempts || FAIL_REQ_ATTEMPT_COUNT;
+  const delayMs = options?.delayMs || FAIL_REQ_ATTEMPT_DELAY_MS;
+
+  for (let index = 0; index < attempts; index++) {
     try {
       const result = await callback();
 
@@ -33,13 +42,20 @@ export async function attempt<T>(
 
       return result;
     } catch (error: unknown) {
+      const isLastAttempt = index + 1 === attempts;
+
       if (onFail) {
-        onFail(`Request failed, trying again ${index + 1}/${FAIL_REQ_ATTEMPT_COUNT}`);
+        onFail(`Request failed, trying again ${index + 1}/${attempts}`);
       }
-      await delay(FAIL_REQ_ATTEMPT_DELAY_MS);
-      if (index + 1 === FAIL_REQ_ATTEMPT_COUNT && onError) {
-        onError((error as Error)?.message);
+
+      if (isLastAttempt) {
+        if (onError) {
+          onError((error as Error)?.message);
+        }
+        break;
       }
+
+      await delay(delayMs);
     }
   }
   return undefined;

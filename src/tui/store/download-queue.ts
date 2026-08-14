@@ -1,9 +1,8 @@
 import { TCombinedStore } from "./index";
 import { Entry } from "../../api/models/entry";
 import { DownloadStatus } from "../../download-statuses";
-import { attempt } from "../../utilities";
-import { getDocument } from "../../api/data/document";
-import { downloadFile } from "../../api/data/download";
+import { downloadByMD5 } from "../../api/data/download";
+import { getMD5FromURL } from "../../api/data/md5";
 
 export interface IDownloadProgress {
   filename: string;
@@ -108,86 +107,83 @@ export const createDownloadQueueStateSlice = (
 
     set({ isQueueActive: true });
 
-    for (;;) {
-      const entry = store.consumeDownloadQueue();
-      if (!entry) {
-        break;
-      }
+    try {
+      for (;;) {
+        const entry = store.consumeDownloadQueue();
+        if (!entry) {
+          break;
+        }
 
-      store.updateCurrentDownloadProgress(entry.id, {
-        status: DownloadStatus.CONNECTING_TO_LIBGEN,
-      });
+        try {
+          store.updateCurrentDownloadProgress(entry.id, {
+            status: DownloadStatus.CONNECTING_TO_LIBGEN,
+          });
 
-      const detailPageUrl = store.mirrorAdapter?.getPageURL(entry.mirror);
-      if (!detailPageUrl) {
-        store.setWarningMessage(`Couldn't get the detail page URL for "${entry.title}"`);
-        store.increaseTotalFailed();
-        continue;
-      }
-
-      const mirrorPageResult = await attempt(() => getDocument(detailPageUrl));
-      if (!mirrorPageResult) {
-        store.setWarningMessage(`Couldn't fetch the mirror page for "${entry.title}"`);
-        store.increaseTotalFailed();
-        continue;
-      }
-
-      const downloadUrl = store.mirrorAdapter?.getMainDownloadURLFromDocument(
-        mirrorPageResult.document
-      );
-
-      if (!downloadUrl) {
-        store.setWarningMessage(`Couldn't find the download url for "${entry.title}"`);
-        store.increaseTotalFailed();
-        continue;
-      }
-
-      const downloadStream = await attempt(() => fetch(downloadUrl as string));
-      if (!downloadStream) {
-        store.setWarningMessage(`Couldn't fetch the download stream for "${entry.title}"`);
-        store.increaseTotalFailed();
-        continue;
-      }
-
-      try {
-        store.updateCurrentDownloadProgress(entry.id, {
-          status: DownloadStatus.DOWNLOADING,
-        });
-
-        await downloadFile({
-          downloadStream,
-          onStart: (filename, total) => {
+          const detailPageUrl = store.mirrorAdapter?.getPageURL(entry.mirror);
+          const md5 = detailPageUrl && getMD5FromURL(detailPageUrl);
+          if (!md5) {
+            store.setWarningMessage(`Couldn't find the MD5 for "${entry.title}"`);
+            store.increaseTotalFailed();
             store.updateCurrentDownloadProgress(entry.id, {
-              filename,
-              progress: undefined,
-              total,
+              status: DownloadStatus.FAILED,
             });
-          },
-          onData: (filename, chunk, total) => {
-            store.updateCurrentDownloadProgress(entry.id, {
-              filename,
-              progress: chunk.length,
-              total,
-            });
-          },
-        });
+            continue;
+          }
 
-        store.increaseTotalDownloaded();
-        store.updateCurrentDownloadProgress(entry.id, {
-          status: DownloadStatus.DOWNLOADED,
-        });
-      } catch {
-        store.setWarningMessage(`Couldn't download "${entry.title}"`);
-        store.increaseTotalFailed();
-        store.updateCurrentDownloadProgress(entry.id, {
-          status: DownloadStatus.FAILED,
-        });
-      } finally {
-        store.removeEntryIdFromDownloadQueue(entry.id);
+          store.updateCurrentDownloadProgress(entry.id, {
+            status: DownloadStatus.DOWNLOADING,
+          });
+
+          const outcome = await downloadByMD5({
+            md5,
+            candidates: store.getMirrorCandidates(),
+            onStart: (filename, total) => {
+              store.updateCurrentDownloadProgress(entry.id, {
+                filename,
+                progress: undefined,
+                total,
+              });
+            },
+            onData: (filename, chunk, total) => {
+              store.updateCurrentDownloadProgress(entry.id, {
+                filename,
+                progress: chunk.length,
+                total,
+              });
+            },
+            onMirrorUnreachable: (mirrorSource) => {
+              store.markMirrorUnreachable(mirrorSource);
+            },
+            onRetry: () => {
+              store.updateCurrentDownloadProgress(entry.id, {
+                progress: undefined,
+                status: DownloadStatus.RETRYING,
+              });
+            },
+          });
+
+          if (outcome.status === "failed") {
+            store.setWarningMessage(`Couldn't download "${entry.title}": ${outcome.reason}`);
+            store.increaseTotalFailed();
+            store.updateCurrentDownloadProgress(entry.id, {
+              status: DownloadStatus.FAILED,
+            });
+            continue;
+          }
+
+          store.setPreferredMirrorSource(outcome.mirror.src);
+          store.increaseTotalDownloaded();
+          store.updateCurrentDownloadProgress(entry.id, {
+            status: DownloadStatus.DOWNLOADED,
+          });
+        } finally {
+          store.removeEntryIdFromDownloadQueue(entry.id);
+        }
       }
+    } finally {
+      // A queue that never clears this flag would refuse every later download.
+      set({ isQueueActive: false });
     }
-
-    set({ isQueueActive: false });
   },
 
   updateCurrentDownloadProgress: (

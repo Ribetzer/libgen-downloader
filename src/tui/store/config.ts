@@ -5,23 +5,41 @@ import { attempt } from "../../utilities";
 import { Adapter } from "../../api/adapters/adapter";
 import { getAdapter } from "../../api/adapters";
 import { getDocument } from "../../api/data/document";
+import { MirrorCandidate } from "../../api/data/resolve";
 import { SEARCH_PAGE_SIZE } from "../../settings";
 import { MirrorCheckStatus } from "./app";
 
 export interface IConfigState extends Config {
   mirrorAdapter: Adapter | undefined;
   mirror: Mirror | undefined;
+  // Last mirror that actually served a file. MD5s in one list usually come
+  // from a single catalogue, so trying that mirror first keeps the per item
+  // probe cost of a long list close to zero.
+  preferredMirrorSource: string | undefined;
+  unreachableMirrorSources: string[];
   fetchConfig: () => Promise<void>;
   switchMirror: (
     onMirrorStatus: (mirror: string, status: MirrorCheckStatus) => void
   ) => Promise<boolean>;
+  setPreferredMirrorSource: (mirrorSource: string | undefined) => void;
+  markMirrorUnreachable: (mirrorSource: string) => void;
+  getMirrorCandidates: () => MirrorCandidate[];
 }
 
-export const initialConfigState: Omit<IConfigState, "fetchConfig" | "switchMirror"> = {
+export const initialConfigState: Omit<
+  IConfigState,
+  | "fetchConfig"
+  | "switchMirror"
+  | "setPreferredMirrorSource"
+  | "markMirrorUnreachable"
+  | "getMirrorCandidates"
+> = {
   mirrorAdapter: undefined,
   latestVersion: "",
   mirrors: [],
   mirror: undefined,
+  preferredMirrorSource: undefined,
+  unreachableMirrorSources: [],
 };
 
 export const createConfigStateSlice = (
@@ -105,5 +123,77 @@ export const createConfigStateSlice = (
     }
 
     return false;
+  },
+
+  setPreferredMirrorSource: (mirrorSource: string | undefined) => {
+    const store = get();
+
+    set({
+      preferredMirrorSource: mirrorSource,
+      unreachableMirrorSources: store.unreachableMirrorSources.filter(
+        (source) => source !== mirrorSource
+      ),
+    });
+  },
+
+  markMirrorUnreachable: (mirrorSource: string) => {
+    const store = get();
+
+    if (store.unreachableMirrorSources.includes(mirrorSource)) {
+      return;
+    }
+
+    set({
+      unreachableMirrorSources: [...store.unreachableMirrorSources, mirrorSource],
+    });
+  },
+
+  getMirrorCandidates: (): MirrorCandidate[] => {
+    const store = get();
+
+    const orderedMirrors: Mirror[] = [];
+    const pushMirror = (mirror: Mirror | undefined) => {
+      if (!mirror) {
+        return;
+      }
+
+      if (orderedMirrors.some((existing) => existing.src === mirror.src)) {
+        return;
+      }
+
+      orderedMirrors.push(mirror);
+    };
+
+    pushMirror(store.mirrors.find((mirror) => mirror.src === store.preferredMirrorSource));
+    pushMirror(store.mirror);
+    for (const mirror of store.mirrors) {
+      pushMirror(mirror);
+    }
+
+    const candidates: MirrorCandidate[] = [];
+    for (const mirror of orderedMirrors) {
+      if (mirror.src === store.mirror?.src && store.mirrorAdapter) {
+        candidates.push({ mirror, adapter: store.mirrorAdapter });
+        continue;
+      }
+
+      try {
+        candidates.push({ mirror, adapter: getAdapter(mirror.src, mirror.type) });
+      } catch {
+        // A mirror type this build doesn't know about is simply not a candidate.
+      }
+    }
+
+    const reachableCandidates = candidates.filter(
+      (candidate) => !store.unreachableMirrorSources.includes(candidate.mirror.src)
+    );
+
+    // Everything failed at some point during this run. Trying them all again
+    // beats failing every remaining item outright.
+    if (reachableCandidates.length === 0) {
+      return candidates;
+    }
+
+    return reachableCandidates;
   },
 });
