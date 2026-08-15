@@ -1,0 +1,12 @@
+node_modules
+build
+standalone-executables
+.git
+.github
+test
+*.md
+!package.json
+.playwright-mcp
+*.pdf
+*.epub
+*.txt

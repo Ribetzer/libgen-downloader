@@ -12,3 +12,10 @@
 *.tgz
 
 ws.session
+
+# WireGuard configs carry a private key. Never commit one.
+*.conf
+wireguard/
+
+# Local container state
+.playwright-mcp/

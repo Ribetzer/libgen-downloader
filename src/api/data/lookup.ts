@@ -6,6 +6,7 @@ import {
   parseFileDetailsJSON,
 } from "./edition";
 import { getDocument, getJSON } from "./document";
+import type { ParsedQuery } from "./query";
 import { MirrorCandidate } from "./resolve";
 import { ISSUE_PAGE_SIZE, MAX_ISSUE_PAGES, PROBE_REQ_ATTEMPT_COUNT } from "../../settings";
 import { attempt } from "../../utilities";
@@ -100,6 +101,25 @@ export const lookupEditionByDOI = async (
   return lookupAcrossMirrors(lookupArguments, async (candidate) => {
     const payload = await getJSON(candidate.adapter.getEditionByDOIURL(doi));
     return parseEditionsJSON(payload);
+  });
+};
+
+/**
+ * Routes a classified query to the lookup it needs. Shared by the TUI store and
+ * the web server so both treat a DOI and an issue identically.
+ */
+export const runQueryLookup = async (
+  parsedQuery: Exclude<ParsedQuery, { kind: "text" }>,
+  lookupArguments: LookupArguments
+): Promise<LookupResult> => {
+  if (parsedQuery.kind === "doi") {
+    return lookupEditionByDOI(parsedQuery.doi, lookupArguments);
+  }
+
+  return lookupIssueEditions({
+    issuesId: parsedQuery.issuesId,
+    volume: parsedQuery.volume,
+    ...lookupArguments,
   });
 };
 

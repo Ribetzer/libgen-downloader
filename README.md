@@ -137,6 +137,58 @@ $ libgen-downloader -o ./downloads -b ./MD5_LIST.txt   # just this run
 The saved default lives in `%APPDATA%\libgen-downloader\config.json` on Windows
 and `$XDG_CONFIG_HOME/libgen-downloader/config.json` elsewhere.
 
+## Web UI and Docker
+
+The same core runs behind a browser UI, meant to sit in a container stack next
+to the other services on a NAS. It offers search (text, DOI, or an
+`issuesid:… issuevolume:…` expression), a queue with live progress, MD5 list
+upload by drag and drop, and a history whose failures can be retried or
+downloaded as a list.
+
+Run it from source:
+
+```
+bun run build:webui     # bundles web/ and src/server/ into build/
+bun run start:server
+```
+
+then open `http://localhost:8095`. Configuration is by environment variable:
+`LIBGEN_PORT` (8095), `LIBGEN_OUTPUT_DIR` (`/downloads`), `LIBGEN_CONFIG_DIR`
+(`/config`, holds the SQLite database), and `PUID`/`PGID`/`TZ` in the container.
+
+### In a gluetun stack
+
+`docker-compose.example.yml` in this repository is a working starting point. The
+service takes `network_mode: service:gluetun` and publishes no ports of its own,
+so its traffic leaves through the VPN; the port is published on the gluetun
+service instead:
+
+```
+  gluetun:
+    ports:
+      - 8095:8095   # libgen-downloader web UI
+
+  libgen-downloader:
+    image: ghcr.io/ribetzer/libgen-downloader:latest
+    network_mode: service:gluetun
+    environment:
+      - PUID=1026
+      - PGID=100
+    volumes:
+      - /volume1/docker/libgen/config:/config
+      - /volume1/Papers:/downloads
+```
+
+Two things to know. Adding a port to an existing gluetun means recreating that
+container, which briefly takes down everything sharing its network namespace. And
+if you run a second gluetun rather than joining an existing one, generate a new
+WireGuard config for it: ProtonVPN issues those per device, and two tunnels
+presenting the same key at once interfere with each other.
+
+Images are built for `linux/amd64` and `linux/arm64` by
+`.github/workflows/docker.yml` and published to GHCR, so the NAS can pull rather
+than build. To build it yourself: `docker build -t libgen-downloader .`
+
 ## Building and running from source
 
 [Bun](https://bun.sh) is the package manager, test runner and bundler. Install

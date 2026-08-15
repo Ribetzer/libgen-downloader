@@ -6,11 +6,9 @@ import { SEARCH_PAGE_SIZE } from "../../settings";
 import { attempt } from "../../utilities";
 import { getDocument } from "../../api/data/document";
 import { buildEntriesFromEditions } from "../../api/data/edition-entry";
-import { lookupEditionByDOI, lookupFileDetails, lookupIssueEditions } from "../../api/data/lookup";
-import type { LookupResult } from "../../api/data/lookup";
+import { lookupFileDetails, runQueryLookup } from "../../api/data/lookup";
 import { parseQuery } from "../../api/data/query";
 import type { ParsedQuery } from "../../api/data/query";
-import type { MirrorCandidate } from "../../api/data/resolve";
 
 export type SearchResult =
   | { status: "success"; entries: Entry[] }
@@ -27,26 +25,6 @@ export interface IEventActions {
   prevPage: () => Promise<void>;
   handleExit: (exitCode?: number) => void;
 }
-
-interface LookupArguments {
-  candidates: MirrorCandidate[];
-  onMirrorUnreachable: (mirrorSource: string) => void;
-}
-
-const runLookup = async (
-  parsedQuery: Exclude<ParsedQuery, { kind: "text" }>,
-  lookupArguments: LookupArguments
-): Promise<LookupResult> => {
-  if (parsedQuery.kind === "doi") {
-    return lookupEditionByDOI(parsedQuery.doi, lookupArguments);
-  }
-
-  return lookupIssueEditions({
-    issuesId: parsedQuery.issuesId,
-    volume: parsedQuery.volume,
-    ...lookupArguments,
-  });
-};
 
 export const createEventActionsSlice = (
   _set: (
@@ -134,7 +112,7 @@ export const createEventActionsSlice = (
       },
     };
 
-    const result = await runLookup(parsedQuery, lookupArguments);
+    const result = await runQueryLookup(parsedQuery, lookupArguments);
 
     store.setIsLoading(false);
     store.setNextPageStatus("unavailable");

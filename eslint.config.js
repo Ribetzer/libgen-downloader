@@ -31,4 +31,13 @@ export default defineConfig([
       "react/no-multi-comp": "error",
     },
   },
+  {
+    // The browser UI is JSX-heavy, where a conditional expression is the
+    // idiomatic form and an if block is not available inside markup.
+    files: ["web/**/*.tsx"],
+    rules: {
+      "no-ternary": "off",
+      "react/no-multi-comp": "off",
+    },
+  },
 ]);

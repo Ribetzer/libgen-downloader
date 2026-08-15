@@ -1,0 +1,60 @@
+# libgen-downloader behind gluetun.
+#
+# Two ways to run this. Pick one.
+#
+# A) Join the gluetun you already have (recommended)
+#    Add the libgen-downloader service below to your existing stack, and add
+#    "8095:8095" to that gluetun service's ports list. Nothing else changes, and
+#    you keep one VPN session. Note that adding a port means recreating gluetun,
+#    which briefly takes down everything sharing its network namespace.
+#
+# B) A separate stack with its own gluetun (this file, as written)
+#    Generate a *new* WireGuard config in the ProtonVPN dashboard for this
+#    stack. Do not reuse the wg0.conf your torrent stack is using: Proton issues
+#    those per device, and two tunnels presenting the same key at once tend to
+#    fight, taking the other stack down with them.
+
+services:
+  gluetun:
+    image: qmcgaw/gluetun:latest
+    platform: linux/amd64
+    container_name: libgen-gluetun
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - VPN_SERVICE_PROVIDER=custom
+      - VPN_TYPE=wireguard
+      - TZ=Europe/London
+      - NET_LOCAL=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+      - DOT=off
+      # No port forwarding needed: nothing here listens for inbound traffic.
+    volumes:
+      # Put this stack's own wg0.conf at:
+      #   /volume1/docker/libgenstack/gluetun/wireguard/wg0.conf
+      - /volume1/docker/libgenstack/gluetun:/gluetun
+    ports:
+      - 8095:8095 # libgen-downloader web UI
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=1
+    restart: unless-stopped
+
+  libgen-downloader:
+    image: ghcr.io/ribetzer/libgen-downloader:latest
+    platform: linux/amd64
+    container_name: libgen-downloader
+    # Shares gluetun's network namespace, so all of its traffic leaves through
+    # the VPN and it publishes no ports of its own.
+    network_mode: service:gluetun
+    depends_on:
+      - gluetun
+    environment:
+      - PUID=1026 # id -u on the NAS for the user that should own the files
+      - PGID=100
+      - TZ=Europe/London
+      - LIBGEN_PORT=8095
+    volumes:
+      - /volume1/docker/libgenstack/config:/config
+      - /volume1/Papers:/downloads
+    restart: unless-stopped

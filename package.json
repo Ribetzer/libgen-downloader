@@ -13,6 +13,10 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "build": "bun build src/index.ts --outdir ./build --target node && echo '#!/usr/bin/env node' | cat - ./build/index.js > ./build/temp && mv ./build/temp ./build/index.js",
+    "build:web": "bun build web/index.html --outdir ./build/web --minify",
+    "build:server": "bun build src/server/index.ts --outdir ./build/server --target bun",
+    "build:webui": "bun run build:web && bun run build:server",
+    "start:server": "bun run src/server/index.ts",
     "compile": "bun run clean && bun run compile:linux-x64 && bun run compile:linux-arm64 && bun run compile:macos-x64 && bun run compile:macos-arm64 && bun run compile:windows-x64",
     "compile:linux-x64": "bun build src/index.ts --compile --target=bun-linux-x64 --outfile ./standalone-executables/libgen-downloader-linux-x64",
     "compile:linux-arm64": "bun build src/index.ts --compile --target=bun-linux-arm64 --outfile ./standalone-executables/libgen-downloader-linux-arm64",
@@ -51,6 +55,7 @@
     "@types/node": "^26.1.1",
     "@types/object-hash": "3.0.6",
     "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.4",
     "@typescript-eslint/eslint-plugin": "^8.52.0",
     "@typescript-eslint/parser": "^8.52.0",
     "eslint": "^9.39.2",
@@ -75,7 +80,8 @@
     "meow": "^14.0.0",
     "nanoid": "^5.1.6",
     "object-hash": "^3.0.0",
-    "react": "^19.2.3",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "zustand": "^5.0.9"
   }
 }
