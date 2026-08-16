@@ -16,6 +16,8 @@ const MOJIBAKE_PATTERN = new RegExp(
 
 const EXTENSION_PATTERN = /\.([\dA-Za-z]{1,8})$/;
 const MIRROR_SUFFIX_PATTERN = /\s+libgen\.\w+$/i;
+// Journal articles arrive as "[Journal name 2013-jan vol. 17 iss. 1-2] Title…".
+const SERIES_PREFIX_PATTERN = /^\[[^\]]*]\s*/;
 const METADATA_START_PATTERN = /[([{]/;
 const YEAR_PATTERN = /\((\d{4})[^)]*\)/;
 const DOI_PATTERN = /\[(10\.[^\]]+)]/;
@@ -65,10 +67,14 @@ const readMetadata = (stem: string) => {
   const year = withoutMirror.match(YEAR_PATTERN)?.[1];
   const doi = withoutMirror.match(DOI_PATTERN)?.[1];
 
-  let title = withoutMirror;
-  const metadataStart = withoutMirror.search(METADATA_START_PATTERN);
+  // The series prefix would otherwise be mistaken for the title and eat the
+  // length budget, truncating the title that was actually wanted.
+  const withoutSeries = withoutMirror.replace(SERIES_PREFIX_PATTERN, "");
+
+  let title = withoutSeries;
+  const metadataStart = withoutSeries.search(METADATA_START_PATTERN);
   if (metadataStart > 0) {
-    title = withoutMirror.slice(0, metadataStart);
+    title = withoutSeries.slice(0, metadataStart);
   }
   title = title.trim();
 

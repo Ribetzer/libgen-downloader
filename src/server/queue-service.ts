@@ -103,6 +103,13 @@ export class QueueService {
         return;
       }
 
+      // With no mirror there is nothing to try, and failing every item for a
+      // VPN that is still connecting would be wrong. Leave the queue as it is;
+      // the server restarts it once a mirror answers again.
+      if (this.mirrors.getCandidates().length === 0) {
+        return;
+      }
+
       await this.process(item);
     }
   }

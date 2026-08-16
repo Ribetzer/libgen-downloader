@@ -1,0 +1,54 @@
+# Local stack: builds the image from this checkout and routes it through
+# gluetun, so the app's traffic leaves via ProtonVPN exactly as it would on the
+# NAS. Nothing here is Synology specific.
+#
+# Before the first run, put your WireGuard config in place:
+#   docker-data/gluetun/wireguard/wg0.conf
+# Gluetun insists on that filename, so a config downloaded as
+# libgen-FI-13.conf has to be copied there under the name wg0.conf.
+#
+#   docker compose -f docker-compose.local.yml up -d --build
+#   http://localhost:8095
+#
+# Downloads land in ./downloads. To use a real library instead, point the
+# libgen-downloader volume at it, for example C:/Papers:/downloads.
+
+services:
+  gluetun:
+    image: qmcgaw/gluetun:latest
+    container_name: libgen-gluetun
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - VPN_SERVICE_PROVIDER=custom
+      - VPN_TYPE=wireguard
+      - TZ=Europe/London
+      - NET_LOCAL=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+      # DNS-over-TLS left on deliberately: name resolution then travels inside
+      # the tunnel, which is what defeats an ISP intercepting libgen lookups.
+    volumes:
+      - ./docker-data/gluetun:/gluetun
+    ports:
+      - 8095:8095 # libgen-downloader web UI, published here because the app
+        # shares this container's network namespace
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=1
+    restart: unless-stopped
+
+  libgen-downloader:
+    build: .
+    container_name: libgen-downloader
+    network_mode: service:gluetun
+    depends_on:
+      - gluetun
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/London
+      - LIBGEN_PORT=8095
+    volumes:
+      - ./docker-data/config:/config
+      - ./downloads:/downloads
+    restart: unless-stopped

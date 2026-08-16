@@ -38,6 +38,20 @@ describe("buildDownloadFileName", () => {
     );
   });
 
+  it("drops the journal prefix so the article title survives", () => {
+    // Exactly what libgen.li sent for this article during a live download.
+    const journalName =
+      "[Journal of Graphics Tools 2013-jan 02 vol. 17 iss. 1-2] " +
+      "Fast Relabeling of Deformable Delaunay Tetrahedral Meshes Using a Compact Uniform Grid" +
+      "{Frogley, D._ Jones, M. D.}(2013 January 02)" +
+      "[10.1080_2165347X.2013.870057]{39124575} libgen.li.pdf";
+
+    expect(buildDownloadFileName(journalName)).toBe(
+      "Fast Relabeling of Deformable Delaunay Tetrahedral Meshes Using a Compact Uniform Grid " +
+        "(2013) [10.1080_2165347X.2013.870057].pdf"
+    );
+  });
+
   it("repairs the encoding before rebuilding", () => {
     expect(buildDownloadFileName(asMojibake("Tödliche Zahlen{Autor}(2001)[10.1_2]{7}.pdf"))).toBe(
       "Tödliche Zahlen (2001) [10.1_2].pdf"

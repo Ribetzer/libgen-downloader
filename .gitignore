@@ -19,3 +19,7 @@ wireguard/
 
 # Local container state
 .playwright-mcp/
+
+# Local container state and downloads
+docker-data/
+downloads/

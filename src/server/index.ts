@@ -15,6 +15,7 @@ const CONFIG_DIRECTORY = process.env.LIBGEN_CONFIG_DIR || "/config";
 // Built assets land in build/web, both locally and in the image.
 const STATIC_DIRECTORY = process.env.LIBGEN_STATIC_DIR || path.join(process.cwd(), "build", "web");
 const MIRROR_REFRESH_MS = 60 * 60 * 1000;
+const MIRROR_RETRY_MS = 30 * 1000;
 const HISTORY_LIMIT = 500;
 
 const json = (body: unknown, status = 200) => Response.json(body, { status });
@@ -35,10 +36,34 @@ if (recovered > 0) {
   console.log(`Requeued ${recovered} item(s) interrupted by a restart`);
 }
 
-await mirrors.refresh();
-setInterval(() => {
-  void mirrors.refresh();
-}, MIRROR_REFRESH_MS);
+/**
+ * In a stack the app usually starts before the VPN tunnel is ready, so a failed
+ * refresh is retried in seconds rather than left for an hour. A refresh that
+ * succeeds also nudges the queue, which is how the stack recovers by itself
+ * after the tunnel drops and comes back.
+ */
+const scheduleMirrorRefresh = (delayMs: number) => {
+  setTimeout(() => {
+    void (async () => {
+      const refreshed = await mirrors.refresh();
+
+      let nextDelayMs = MIRROR_RETRY_MS;
+      if (refreshed) {
+        nextDelayMs = MIRROR_REFRESH_MS;
+        queue.start();
+      }
+
+      scheduleMirrorRefresh(nextDelayMs);
+    })();
+  }, delayMs).unref?.();
+};
+
+const startedWithMirror = await mirrors.refresh();
+let firstDelayMs = MIRROR_RETRY_MS;
+if (startedWithMirror) {
+  firstDelayMs = MIRROR_REFRESH_MS;
+}
+scheduleMirrorRefresh(firstDelayMs);
 
 queue.start();
 

@@ -156,6 +156,22 @@ describe("QueueService", () => {
     expect(statuses.at(-1)).toBe("downloaded");
   });
 
+  it("leaves items queued when no mirror is available yet", async () => {
+    const fetchMock = mockFetch(async () => new Response("should not be called"));
+
+    // A server that has not reached a mirror yet, as when the VPN is still
+    // connecting.
+    const mirrors = new MirrorService();
+    const queue = new QueueService({ store, mirrors, outputDirectory: OUTPUT_DIRECTORY });
+
+    const idle = waitForIdle(queue);
+    const item = queue.add(MD5, "Waiting for the tunnel");
+    await idle;
+
+    expect(store.get(item.id)?.status).toBe("queued");
+    expect(fetchMock.requestedURLs).toEqual([]);
+  });
+
   it("leaves a cancelled item alone when the queue drains", async () => {
     mockFetch(async (input) => {
       if (input.toString().includes("/ads.php")) {
