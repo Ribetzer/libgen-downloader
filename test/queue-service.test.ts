@@ -6,10 +6,12 @@ import { Writable } from "node:stream";
 import { ItemStore, QueueItem } from "../src/server/database";
 import { MirrorService } from "../src/server/mirror-service";
 import { QueueService } from "../src/server/queue-service";
+import { StorageService } from "../src/server/storage-service";
 import { mockFetch } from "./support/fetch-mock";
 
 const MD5 = "b7abef3d085a1007a137a247dcff8dcb";
 const OUTPUT_DIRECTORY = path.join(os.tmpdir(), "libgen-downloader-queue-test");
+const MARKER = ".libgen-volume";
 
 const detailPage =
   '<table id="main"><tr><td>Book</td><td><a href="https://first.example/files/book.epub">GET</a></td></tr></table>';
@@ -40,10 +42,52 @@ const waitForIdle = (queue: QueueService) =>
     });
   });
 
+/**
+ * Polls the store until an item reaches `status`. A paused queue emits
+ * `queue-idle` on every retry, so "wait for the next idle" resolves while the
+ * queue is still paused - this waits for the outcome instead of a signal.
+ */
+const waitForStatus = async (id: number, status: string, timeoutMs = 5000) => {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    if (store.get(id)?.status === status) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  throw new Error(`item ${id} never reached "${status}" (last: ${store.get(id)?.status})`);
+};
+
 let store: ItemStore;
+
+/**
+ * Every queue built by a test, so `afterEach` can stop its retry timer. A queue
+ * that paused for a missing mirror or disk re-arms that timer each time it
+ * fires, which keeps the test process alive indefinitely once the tests
+ * themselves have finished.
+ */
+const queues: QueueService[] = [];
+
+const createQueue = (options: Partial<ConstructorParameters<typeof QueueService>[0]> = {}) => {
+  const queue = new QueueService({
+    store,
+    mirrors: createMirrorService(),
+    outputDirectory: OUTPUT_DIRECTORY,
+    ...options,
+  });
+  queues.push(queue);
+  return queue;
+};
 
 beforeEach(() => {
   store = new ItemStore(":memory:");
+  // Tests share one output directory, and a run killed mid-test would
+  // otherwise leave a marker behind that silently flips the next run's
+  // storage checks from "unplugged" to "ready".
+  fs.rmSync(path.join(OUTPUT_DIRECTORY, MARKER), { force: true });
   spyOn(fs, "createWriteStream").mockImplementation(
     () =>
       new Writable({
@@ -55,6 +99,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  for (const queue of queues.splice(0)) {
+    queue.dispose();
+  }
   store.close();
   mock.restore();
 });
@@ -100,7 +147,7 @@ describe("QueueService", () => {
     });
 
     const mirrors = createMirrorService();
-    const queue = new QueueService({ store, mirrors, outputDirectory: OUTPUT_DIRECTORY });
+    const queue = createQueue({ mirrors });
     const idle = waitForIdle(queue);
     queue.add(MD5, "A paper");
     await idle;
@@ -119,7 +166,7 @@ describe("QueueService", () => {
     mockFetch(async () => new Response("<html>no record</html>"));
 
     const mirrors = createMirrorService();
-    const queue = new QueueService({ store, mirrors, outputDirectory: OUTPUT_DIRECTORY });
+    const queue = createQueue({ mirrors });
     const idle = waitForIdle(queue);
     queue.add(MD5);
     await idle;
@@ -139,7 +186,7 @@ describe("QueueService", () => {
     });
 
     const mirrors = createMirrorService();
-    const queue = new QueueService({ store, mirrors, outputDirectory: OUTPUT_DIRECTORY });
+    const queue = createQueue({ mirrors });
     const statuses: string[] = [];
     queue.subscribe((event) => {
       if (event.type !== "queue-idle") {
@@ -162,7 +209,7 @@ describe("QueueService", () => {
     // A server that has not reached a mirror yet, as when the VPN is still
     // connecting.
     const mirrors = new MirrorService();
-    const queue = new QueueService({ store, mirrors, outputDirectory: OUTPUT_DIRECTORY });
+    const queue = createQueue({ mirrors });
 
     const idle = waitForIdle(queue);
     const item = queue.add(MD5, "Waiting for the tunnel");
@@ -170,6 +217,89 @@ describe("QueueService", () => {
 
     expect(store.get(item.id)?.status).toBe("queued");
     expect(fetchMock.requestedURLs).toEqual([]);
+  });
+
+  it("leaves items queued when the output volume is not the expected disk", async () => {
+    const fetchMock = mockFetch(async () => new Response("should not be called"));
+
+    // A directory that exists and is writable but carries no marker - exactly
+    // what a phantom bind mount of an unplugged disk looks like.
+    const storage = new StorageService({ directory: OUTPUT_DIRECTORY, marker: ".libgen-volume" });
+    const queue = createQueue({
+      storage,
+    });
+
+    const idle = waitForIdle(queue);
+    const item = queue.add(MD5, "Waiting for the disk");
+    await idle;
+
+    expect(store.get(item.id)?.status).toBe("queued");
+    expect(fetchMock.requestedURLs).toEqual([]);
+  });
+
+  it("downloads once the volume marker is there", async () => {
+    mockFetch(async (input) => {
+      if (input.toString().includes("/ads.php")) {
+        return new Response(detailPage);
+      }
+
+      return fileResponse();
+    });
+
+    fs.mkdirSync(OUTPUT_DIRECTORY, { recursive: true });
+    const markerPath = path.join(OUTPUT_DIRECTORY, MARKER);
+    fs.writeFileSync(markerPath, "test-volume");
+
+    try {
+      const storage = new StorageService({ directory: OUTPUT_DIRECTORY, marker: MARKER });
+      const queue = createQueue({
+        storage,
+      });
+
+      const idle = waitForIdle(queue);
+      queue.add(MD5, "A paper");
+      await idle;
+
+      expect(store.listHistory(10)[0]?.status).toBe("downloaded");
+    } finally {
+      fs.rmSync(markerPath, { force: true });
+    }
+  });
+
+  it("picks the work back up once the volume returns, with no restart", async () => {
+    mockFetch(async (input) => {
+      if (input.toString().includes("/ads.php")) {
+        return new Response(detailPage);
+      }
+
+      return fileResponse();
+    });
+
+    fs.mkdirSync(OUTPUT_DIRECTORY, { recursive: true });
+    const markerPath = path.join(OUTPUT_DIRECTORY, MARKER);
+    fs.rmSync(markerPath, { force: true });
+
+    const storage = new StorageService({ directory: OUTPUT_DIRECTORY, marker: MARKER });
+    const queue = createQueue({
+      storage,
+      retryMs: 25,
+    });
+
+    try {
+      const pausedIdle = waitForIdle(queue);
+      const item = queue.add(MD5, "Waiting for the disk");
+      await pausedIdle;
+      expect(store.get(item.id)?.status).toBe("queued");
+
+      // Plug it back in. Nobody calls start() - the queue's own retry must.
+      fs.writeFileSync(markerPath, "test-volume");
+      storage.forget();
+
+      await waitForStatus(item.id, "downloaded");
+    } finally {
+      queue.dispose();
+      fs.rmSync(markerPath, { force: true });
+    }
   });
 
   it("leaves a cancelled item alone when the queue drains", async () => {
@@ -182,7 +312,7 @@ describe("QueueService", () => {
     });
 
     const mirrors = createMirrorService();
-    const queue = new QueueService({ store, mirrors, outputDirectory: OUTPUT_DIRECTORY });
+    const queue = createQueue({ mirrors });
 
     const item: QueueItem = store.add(MD5, "Not wanted");
     expect(queue.cancel(item.id)).toBe(true);

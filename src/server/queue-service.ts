@@ -1,6 +1,8 @@
 import { downloadByMD5 } from "../api/data/download";
+import { QUEUE_RETRY_MS } from "../settings";
 import { ItemStore, QueueItem } from "./database";
 import { MirrorService } from "./mirror-service";
+import { StorageService } from "./storage-service";
 
 export type QueueEvent =
   | { type: "item-added"; item: QueueItem }
@@ -13,6 +15,8 @@ interface QueueServiceArguments {
   store: ItemStore;
   mirrors: MirrorService;
   outputDirectory: string;
+  storage?: StorageService;
+  retryMs?: number;
 }
 
 /**
@@ -27,13 +31,43 @@ export class QueueService {
   private store: ItemStore;
   private mirrors: MirrorService;
   private outputDirectory: string;
+  private storage: StorageService | undefined;
   private listeners = new Set<Listener>();
   private running = false;
+  private retryTimer: ReturnType<typeof setTimeout> | undefined;
+  private retryMs: number;
 
-  constructor({ store, mirrors, outputDirectory }: QueueServiceArguments) {
+  constructor({ store, mirrors, outputDirectory, storage, retryMs }: QueueServiceArguments) {
     this.store = store;
     this.mirrors = mirrors;
     this.outputDirectory = outputDirectory;
+    this.storage = storage;
+    this.retryMs = retryMs ?? QUEUE_RETRY_MS;
+  }
+
+  /**
+   * Comes back to work that is still queued. Without this the queue would wait
+   * on whoever else calls `start()`, and the server's config refresh backs off
+   * to hourly once everything is healthy - so a disk unplugged and replugged in
+   * between would leave the queue parked for the rest of that hour.
+   */
+  private scheduleRetry(): void {
+    if (this.retryTimer) {
+      return;
+    }
+
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = undefined;
+      this.start();
+    }, this.retryMs);
+
+    this.retryTimer.unref?.();
+  }
+
+  /** Stops the retry timer; for tests and a clean shutdown. */
+  dispose(): void {
+    clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
   }
 
   subscribe(listener: Listener): () => void {
@@ -104,9 +138,17 @@ export class QueueService {
       }
 
       // With no mirror there is nothing to try, and failing every item for a
-      // VPN that is still connecting would be wrong. Leave the queue as it is;
-      // the server restarts it once a mirror answers again.
+      // VPN that is still connecting would be wrong. Leave the queue as it is
+      // and come back to it.
       if (this.mirrors.getCandidates().length === 0) {
+        this.scheduleRetry();
+        return;
+      }
+
+      // Same reasoning one step later: with the output volume unplugged there
+      // is nowhere to write, and an unplugged cable must not fail a queue.
+      if (this.storage && !(await this.storage.isReady())) {
+        this.scheduleRetry();
         return;
       }
 

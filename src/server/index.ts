@@ -6,6 +6,7 @@ import { ItemStore } from "./database";
 import { MirrorService } from "./mirror-service";
 import { QueueService } from "./queue-service";
 import { runSearch } from "./search-service";
+import { StorageService } from "./storage-service";
 // Straight from package.json: importing ../index would run the CLI entry point.
 import packageJson from "../../package.json";
 
@@ -14,6 +15,9 @@ const OUTPUT_DIRECTORY = process.env.LIBGEN_OUTPUT_DIR || "/downloads";
 const CONFIG_DIRECTORY = process.env.LIBGEN_CONFIG_DIR || "/config";
 // Built assets land in build/web, both locally and in the image.
 const STATIC_DIRECTORY = process.env.LIBGEN_STATIC_DIR || path.join(process.cwd(), "build", "web");
+// Unset means no volume check at all, so an ordinary local or NAS setup is
+// untouched; set it to the marker filename a removable disk carries.
+const VOLUME_MARKER = process.env.LIBGEN_VOLUME_MARKER || "";
 const MIRROR_REFRESH_MS = 60 * 60 * 1000;
 const MIRROR_RETRY_MS = 30 * 1000;
 const HISTORY_LIMIT = 500;
@@ -29,7 +33,8 @@ fs.mkdirSync(CONFIG_DIRECTORY, { recursive: true });
 
 const store = new ItemStore(path.join(CONFIG_DIRECTORY, "libgen-downloader.db"));
 const mirrors = new MirrorService();
-const queue = new QueueService({ store, mirrors, outputDirectory: OUTPUT_DIRECTORY });
+const storage = new StorageService({ directory: OUTPUT_DIRECTORY, marker: VOLUME_MARKER });
+const queue = new QueueService({ store, mirrors, outputDirectory: OUTPUT_DIRECTORY, storage });
 
 const recovered = store.recoverInterrupted();
 if (recovered > 0) {
@@ -41,15 +46,24 @@ if (recovered > 0) {
  * refresh is retried in seconds rather than left for an hour. A refresh that
  * succeeds also nudges the queue, which is how the stack recovers by itself
  * after the tunnel drops and comes back.
+ *
+ * The same timer re-reads the output volume, so a removable disk that gets
+ * plugged back in resumes the queue without a restart.
  */
 const scheduleMirrorRefresh = (delayMs: number) => {
   setTimeout(() => {
     void (async () => {
       const refreshed = await mirrors.refresh();
 
+      storage.forget();
+      const volumeReady = await storage.isReady();
+
       let nextDelayMs = MIRROR_RETRY_MS;
-      if (refreshed) {
+      if (refreshed && volumeReady) {
         nextDelayMs = MIRROR_REFRESH_MS;
+      }
+
+      if (refreshed) {
         queue.start();
       }
 
@@ -59,8 +73,18 @@ const scheduleMirrorRefresh = (delayMs: number) => {
 };
 
 const startedWithMirror = await mirrors.refresh();
+const startedWithVolume = await storage.getState();
+
+if (VOLUME_MARKER) {
+  if (startedWithVolume.ready) {
+    console.log(`Output volume confirmed by ${VOLUME_MARKER}`);
+  } else {
+    console.log(startedWithVolume.reason);
+  }
+}
+
 let firstDelayMs = MIRROR_RETRY_MS;
-if (startedWithMirror) {
+if (startedWithMirror && startedWithVolume.ready) {
   firstDelayMs = MIRROR_REFRESH_MS;
 }
 scheduleMirrorRefresh(firstDelayMs);
@@ -179,9 +203,12 @@ const handleRequest = async (request: Request): Promise<Response> => {
 
   if (pathname === "/api/config") {
     const state = mirrors.getState();
+    const volume = await storage.getState();
     return json({
       version: packageJson.version,
       outputDirectory: OUTPUT_DIRECTORY,
+      storageReady: volume.ready,
+      storageError: volume.reason,
       mirror: state.mirror?.src || "",
       mirrors: state.mirrors.map((mirror) => mirror.src),
       preferredMirror: state.preferredMirrorSource || "",

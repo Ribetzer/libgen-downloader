@@ -4,6 +4,8 @@ import { createRoot } from "react-dom/client";
 interface ServerConfig {
   version: string;
   outputDirectory: string;
+  storageReady: boolean;
+  storageError: string;
   mirror: string;
   mirrors: string[];
   preferredMirror: string;
@@ -250,10 +252,20 @@ const App = () => {
           mirror <strong>{config?.mirror || "none"}</strong>
         </span>
         <span className="meta">
+          <span className={`status-dot ${config && !config.storageReady ? "bad" : "ok"}`} />
           downloads to <strong>{config?.outputDirectory || "…"}</strong>
         </span>
         <span className="meta">v{config?.version || "…"}</span>
       </header>
+
+      {config?.storageError && (
+        <div className="banner">
+          {config.storageError} —{" "}
+          <button className="small" onClick={() => void loadConfig()}>
+            check again
+          </button>
+        </div>
+      )}
 
       {config?.error && (
         <div className="banner">

@@ -10,8 +10,29 @@
 #   docker compose -f docker-compose.local.yml up -d --build
 #   http://localhost:8095
 #
-# Downloads land in ./downloads. To use a real library instead, point the
-# libgen-downloader volume at it, for example C:/Papers:/downloads.
+# Downloads land on the T9 at D:/Papers/inbox, where the RAG corpus sync picks
+# them up. LIBGEN_VOLUME_MARKER names a file that only the real disk carries: an
+# unplugged removable drive leaves Docker free to create an empty, writable
+# bind-mount target, and without the marker the app would download into it and
+# lose the lot. Unset the variable to turn the check off.
+#
+# The queue database stays on C: under ./docker-data - D: is exFAT, which has no
+# advisory locking SQLite can rely on through a bind mount.
+#
+# If the UI shows the "missing its .libgen-volume marker" banner, WSL2 has not
+# mounted the T9. It only picks up removable drives that were attached when it
+# started, and Docker then quietly creates an empty stand-in directory rather
+# than failing - which is the whole reason the marker check exists. Confirmed
+# with `docker exec libgen-downloader grep /downloads /proc/mounts`: a working
+# mount reads `D: /downloads 9p ... drvfs`, a phantom one reads `/dev/sde ext4`.
+# Fix it by restarting Docker Desktop with the drive plugged in, or immediately
+# with:
+#
+#   wsl -d docker-desktop -e mount -t drvfs D: /mnt/host/d
+#   docker compose -f docker-compose.local.yml up -d --force-recreate libgen-downloader
+#
+# The queue holds its items throughout and drains on its own once the disk is
+# back, so nothing is lost either way.
 
 services:
   gluetun:
@@ -48,7 +69,8 @@ services:
       - PGID=1000
       - TZ=Europe/London
       - LIBGEN_PORT=8095
+      - LIBGEN_VOLUME_MARKER=.libgen-volume
     volumes:
       - ./docker-data/config:/config
-      - ./downloads:/downloads
+      - D:/Papers/inbox:/downloads
     restart: unless-stopped

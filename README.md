@@ -154,7 +154,49 @@ bun run start:server
 
 then open `http://localhost:8095`. Configuration is by environment variable:
 `LIBGEN_PORT` (8095), `LIBGEN_OUTPUT_DIR` (`/downloads`), `LIBGEN_CONFIG_DIR`
-(`/config`, holds the SQLite database), and `PUID`/`PGID`/`TZ` in the container.
+(`/config`, holds the SQLite database), `LIBGEN_VOLUME_MARKER` (below), and
+`PUID`/`PGID`/`TZ` in the container.
+
+### Downloading to a removable disk
+
+Set `LIBGEN_VOLUME_MARKER` to the name of a file that only the real download
+volume carries, for example:
+
+```
+      - LIBGEN_VOLUME_MARKER=.libgen-volume
+    volumes:
+      - D:/Papers/inbox:/downloads
+```
+
+with `.libgen-volume` sitting in that directory on the disk itself.
+
+The check exists because the dangerous case is not a missing mount but a
+*phantom* one. With the disk unplugged, Docker is free to create the bind-mount
+target and WSL2 can hold a stale mount point, so the container gets an empty,
+writable directory that reaches no disk — a write test passes and the downloads
+are lost with it. A marker file cannot be faked that way.
+
+When the marker is absent the queue pauses and the UI says so; items stay queued
+rather than failing, and the queue drains on its own within 30 seconds of the
+disk coming back. Leave the variable unset to skip the check entirely, which is
+the right thing for an ordinary local folder or an always-mounted NAS share.
+
+Keep `LIBGEN_CONFIG_DIR` off a removable or exFAT volume. It holds the SQLite
+queue database, and exFAT offers no advisory locking through a bind mount.
+
+On Docker Desktop for Windows this is not hypothetical. WSL2 only mounts
+removable drives that were attached when it started, and Docker then creates an
+empty stand-in directory rather than failing. To tell the two apart:
+
+```
+docker exec <container> grep /downloads /proc/mounts
+```
+
+A real mount reads `D: /downloads 9p ... drvfs`; a phantom one reads
+`/dev/sde ... ext4`, which is Docker's own internal disk. Restarting Docker
+Desktop with the drive attached fixes it, as does
+`wsl -d docker-desktop -e mount -t drvfs D: /mnt/host/d` followed by recreating
+the container.
 
 ### In a gluetun stack
 

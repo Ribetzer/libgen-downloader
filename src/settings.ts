@@ -28,6 +28,17 @@ export const MAX_RETRY_AFTER_MS = 60_000;
 export const MAX_PATH_LENGTH = 250;
 export const MIN_FILE_NAME_LENGTH = 40;
 
+// How long a volume check is trusted before the marker is read again. Short
+// enough that reconnecting a disk is noticed on its own, long enough that
+// draining a queue does not stat once per item.
+export const VOLUME_CHECK_TTL_MS = 5000;
+
+// How soon a queue that stopped for a missing mirror or a missing disk tries
+// again. The queue owns this rather than the server's config refresh, which
+// backs off to hourly once everything is healthy and would leave work parked
+// until the next tick.
+export const QUEUE_RETRY_MS = 15_000;
+
 export const SEARCH_PAGE_SIZE = 25;
 
 // The editions tab honours `res` and `page`, so a periodical is collected a

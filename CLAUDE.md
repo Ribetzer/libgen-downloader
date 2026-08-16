@@ -96,6 +96,8 @@ Two invariants worth preserving:
 
 Every remote call is wrapped in `attempt()` (`src/utilities.ts`): 5 tries with 2s delay by default, returns `undefined` instead of throwing. Callers check for `undefined` and surface a warning. Pass `{ attempts, delayMs }` for cheaper probes — mirror lookups use `PROBE_REQ_ATTEMPT_COUNT`.
 
+Output storage is checked, not assumed. `StorageService` (`src/server/storage-service.ts`) reads a marker file named by `LIBGEN_VOLUME_MARKER` inside the output directory; unset disables the check. It exists because an unplugged removable disk yields a *writable* empty bind mount rather than an error, so a write test passes and the downloads vanish. `QueueService.drain()` treats a failed check exactly like having no mirror — return, leaving items `queued` — and the mirror-refresh timer re-reads it, so reconnecting the disk resumes the queue without a restart.
+
 Downloads recover by mirror, not just by retry. `resolveDownloadURL()` (`src/api/data/resolve.ts`) walks candidate mirrors until one yields a download link, and distinguishes *not_found* (every mirror answered, no record) from *unreachable* (nothing answered) so the reported reason is honest. Candidate ordering lives in the config slice (`getMirrorCandidates`): last mirror that served a file, then the active mirror, then the rest, minus mirrors marked unreachable this run.
 
 Search failures are handled separately: `adapter.detectConnectionError()` inspects the parsed page, and on a mirror-level error `handleSearchSubmit` drives `switchMirror()`, which test-searches each remaining mirror, swaps in the new adapter, clears the cache, and retries once — with `mirrorCheckStates` feeding the failover UI.
