@@ -17,7 +17,9 @@ const MOJIBAKE_PATTERN = new RegExp(
 const EXTENSION_PATTERN = /\.([\dA-Za-z]{1,8})$/;
 const MIRROR_SUFFIX_PATTERN = /\s+libgen\.\w+$/i;
 // Journal articles arrive as "[Journal name 2013-jan vol. 17 iss. 1-2] Title…".
-const SERIES_PREFIX_PATTERN = /^\[[^\]]*]\s*/;
+// The leading \s* matters: some names arrive with a leading space, and without
+// it the anchor fails and the whole prefix is kept as the title.
+const SERIES_PREFIX_PATTERN = /^\s*\[[^\]]*]\s*/;
 const METADATA_START_PATTERN = /[([{]/;
 const YEAR_PATTERN = /\((\d{4})[^)]*\)/;
 const DOI_PATTERN = /\[(10\.[^\]]+)]/;
@@ -132,11 +134,23 @@ const sanitize = (value: string): string => {
  */
 export const buildDownloadFileName = (
   rawName: string,
-  maxLength: number = MAX_FILE_NAME_LENGTH
+  maxLength: number = MAX_FILE_NAME_LENGTH,
+  preferredTitle = ""
 ): string => {
   const repaired = repairEncoding(rawName);
   const { stem, extension } = splitExtension(repaired);
-  const { title, suffix } = readMetadata(stem);
+  const metadata = readMetadata(stem);
+  const { suffix } = metadata;
+
+  // A caller that knows the real title beats anything derivable from the name.
+  // LibGen elides long conference names mid-string - "[IEEE 2019 11th
+  // International Conference on … (I...{Authors…" - so the title is genuinely
+  // absent from the bytes, and no parsing recovers it. The year and DOI still
+  // come from the name, which is where they are reliable.
+  let title = metadata.title;
+  if (preferredTitle.trim()) {
+    title = preferredTitle.trim();
+  }
 
   let extensionPart = "";
   if (extension) {

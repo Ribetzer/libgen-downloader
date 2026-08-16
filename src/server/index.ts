@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { parseMD5List } from "../api/data/file";
 import { extractMD5 } from "../api/data/md5";
-import { ItemStore } from "./database";
+import { ItemStore, QueueItem } from "./database";
 import { MirrorService } from "./mirror-service";
 import { QueueService } from "./queue-service";
 import { runSearch } from "./search-service";
@@ -18,6 +18,9 @@ const STATIC_DIRECTORY = process.env.LIBGEN_STATIC_DIR || path.join(process.cwd(
 // Unset means no volume check at all, so an ordinary local or NAS setup is
 // untouched; set it to the marker filename a removable disk carries.
 const VOLUME_MARKER = process.env.LIBGEN_VOLUME_MARKER || "";
+// Told about every finished item, so an indexer downstream does not have to
+// poll /api/history. Unset means no notification is sent.
+const WEBHOOK_URL = process.env.LIBGEN_WEBHOOK_URL || "";
 const MIRROR_REFRESH_MS = 60 * 60 * 1000;
 const MIRROR_RETRY_MS = 30 * 1000;
 const HISTORY_LIMIT = 500;
@@ -34,7 +37,37 @@ fs.mkdirSync(CONFIG_DIRECTORY, { recursive: true });
 const store = new ItemStore(path.join(CONFIG_DIRECTORY, "libgen-downloader.db"));
 const mirrors = new MirrorService();
 const storage = new StorageService({ directory: OUTPUT_DIRECTORY, marker: VOLUME_MARKER });
-const queue = new QueueService({ store, mirrors, outputDirectory: OUTPUT_DIRECTORY, storage });
+
+const notifyFinished = (item: QueueItem) => {
+  if (!WEBHOOK_URL) {
+    return;
+  }
+
+  void fetch(WEBHOOK_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      md5: item.md5,
+      title: item.title,
+      status: item.status,
+      filename: item.filename,
+      path: path.join(OUTPUT_DIRECTORY, item.filename),
+      mirror: item.mirror,
+      error: item.error,
+      total: item.total,
+    }),
+  }).catch((error: unknown) => {
+    console.log(`Webhook for "${item.filename || item.md5}" failed: ${(error as Error).message}`);
+  });
+};
+
+const queue = new QueueService({
+  store,
+  mirrors,
+  outputDirectory: OUTPUT_DIRECTORY,
+  storage,
+  onFinished: notifyFinished,
+});
 
 const recovered = store.recoverInterrupted();
 if (recovered > 0) {
@@ -151,21 +184,61 @@ const serveStatic = async (pathname: string): Promise<Response> => {
   return notFound();
 };
 
+interface QueueRequestItem {
+  md5?: string;
+  doi?: string;
+  title?: string;
+}
+
+/**
+ * A DOI names a work, not a file, so it has to be looked up before it can be
+ * queued. Doing it here saves every caller a search-then-queue round trip, and
+ * a DOI is the identifier other tools actually hold.
+ */
+const resolveRequestedItem = async (
+  item: QueueRequestItem
+): Promise<{ md5: string; title: string } | { reason: string }> => {
+  const md5 = extractMD5(item.md5 || "");
+  if (md5) {
+    return { md5, title: item.title || "" };
+  }
+
+  const doi = (item.doi || "").trim();
+  if (!doi) {
+    return { reason: "no usable md5 or doi" };
+  }
+
+  const outcome = await runSearch(mirrors, doi, 1);
+  if (outcome.status === "error") {
+    return { reason: outcome.message };
+  }
+
+  // A DOI can name several files - different scans of the same book, say.
+  // The first is what the mirror ranks highest.
+  const [first] = outcome.items;
+  if (!first) {
+    return { reason: `no file on any mirror for ${doi}` };
+  }
+
+  return { md5: first.md5, title: item.title || first.title || "" };
+};
+
 const handleQueuePost = async (request: Request): Promise<Response> => {
-  const body = (await request.json()) as { items?: { md5?: string; title?: string }[] };
+  const body = (await request.json()) as { items?: QueueRequestItem[] };
   const requested = body.items || [];
 
   const accepted: { md5: string; title: string }[] = [];
-  const rejected: string[] = [];
+  const rejected: { input: string; reason: string }[] = [];
 
   for (const item of requested) {
-    const md5 = extractMD5(item.md5 || "");
-    if (!md5) {
-      rejected.push(item.md5 || "");
+    const resolved = await resolveRequestedItem(item);
+
+    if ("reason" in resolved) {
+      rejected.push({ input: item.md5 || item.doi || "", reason: resolved.reason });
       continue;
     }
 
-    accepted.push({ md5, title: item.title || "" });
+    accepted.push(resolved);
   }
 
   const added = queue.addMany(accepted);

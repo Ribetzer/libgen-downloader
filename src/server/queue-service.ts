@@ -17,6 +17,8 @@ interface QueueServiceArguments {
   outputDirectory: string;
   storage?: StorageService;
   retryMs?: number;
+  /** Called once per item reaching a terminal state, for notifying elsewhere. */
+  onFinished?: (item: QueueItem) => void;
 }
 
 /**
@@ -36,13 +38,22 @@ export class QueueService {
   private running = false;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private retryMs: number;
+  private onFinished: ((item: QueueItem) => void) | undefined;
 
-  constructor({ store, mirrors, outputDirectory, storage, retryMs }: QueueServiceArguments) {
+  constructor({
+    store,
+    mirrors,
+    outputDirectory,
+    storage,
+    retryMs,
+    onFinished,
+  }: QueueServiceArguments) {
     this.store = store;
     this.mirrors = mirrors;
     this.outputDirectory = outputDirectory;
     this.storage = storage;
     this.retryMs = retryMs ?? QUEUE_RETRY_MS;
+    this.onFinished = onFinished;
   }
 
   /**
@@ -153,6 +164,29 @@ export class QueueService {
       }
 
       await this.process(item);
+      this.announceFinished(item.id);
+    }
+  }
+
+  /**
+   * Tells a listener the item is done with, whatever the outcome. Kept out of
+   * `process` so a slow or broken listener cannot interfere with the download
+   * itself, and errors here are swallowed for the same reason.
+   */
+  private announceFinished(id: number): void {
+    if (!this.onFinished) {
+      return;
+    }
+
+    const item = this.store.get(id);
+    if (!item) {
+      return;
+    }
+
+    try {
+      this.onFinished(item);
+    } catch {
+      // A notification failing must not stop the queue draining.
     }
   }
 
@@ -163,6 +197,9 @@ export class QueueService {
       md5: item.md5,
       candidates: this.mirrors.getCandidates(),
       outputDirectory: this.outputDirectory,
+      // Whoever queued this usually knows the real title - a DOI lookup
+      // certainly does - and libgen's own filename often does not.
+      preferredTitle: item.title,
       onStart: (filename, total) => {
         this.change(item.id, { status: "downloading", filename, total, progress: 0 });
       },

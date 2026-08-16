@@ -155,11 +155,30 @@ describe("QueueService", () => {
     const [item] = store.listHistory(10);
     expect(item).toMatchObject({
       status: "downloaded",
-      filename: "book.epub",
+      // Named from the queued title, not the mirror's "book.epub": whoever
+      // queued it knows the real title, and libgen's own name often does not.
+      filename: "A paper.epub",
       mirror: "https://first.example/",
       total: 18,
     });
     expect(mirrors.getState().preferredMirrorSource).toBe("https://first.example/");
+  });
+
+  it("falls back to the mirror's filename when queued without a title", async () => {
+    mockFetch(async (input) => {
+      if (input.toString().includes("/ads.php")) {
+        return new Response(detailPage);
+      }
+
+      return fileResponse();
+    });
+
+    const queue = createQueue();
+    const idle = waitForIdle(queue);
+    queue.add(MD5);
+    await idle;
+
+    expect(store.listHistory(10)[0]?.filename).toBe("book.epub");
   });
 
   it("records why an item failed instead of losing the reason", async () => {
@@ -300,6 +319,45 @@ describe("QueueService", () => {
       queue.dispose();
       fs.rmSync(markerPath, { force: true });
     }
+  });
+
+  it("tells a listener about every finished item, whatever the outcome", async () => {
+    mockFetch(async (input) => {
+      if (input.toString().includes("/ads.php")) {
+        return new Response(detailPage);
+      }
+
+      return fileResponse();
+    });
+
+    fs.mkdirSync(OUTPUT_DIRECTORY, { recursive: true });
+    const finished: { md5: string; status: string }[] = [];
+    const queue = createQueue({
+      onFinished: (item) => finished.push({ md5: item.md5, status: item.status }),
+    });
+
+    const idle = waitForIdle(queue);
+    queue.add(MD5, "A paper");
+    await idle;
+
+    expect(finished).toEqual([{ md5: MD5, status: "downloaded" }]);
+  });
+
+  it("keeps draining when a listener throws", async () => {
+    mockFetch(async () => new Response("<html>no record</html>"));
+
+    const queue = createQueue({
+      onFinished: () => {
+        throw new Error("webhook is down");
+      },
+    });
+
+    const idle = waitForIdle(queue);
+    const item = queue.add(MD5);
+    await idle;
+
+    // The failure is recorded rather than lost to the listener's exception.
+    expect(store.get(item.id)?.status).toBe("failed");
   });
 
   it("leaves a cancelled item alone when the queue drains", async () => {

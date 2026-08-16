@@ -52,6 +52,43 @@ describe("buildDownloadFileName", () => {
     );
   });
 
+  it("drops a journal prefix that arrived with a leading space", () => {
+    // Some names come through with one, and an anchored ^\[ then misses the
+    // prefix entirely and keeps the whole thing as the title.
+    const withSpace =
+      " [Journal of Graphics Tools vol. 17] Real Title{Author}(2013)[10.1_2]{9}.pdf";
+
+    expect(buildDownloadFileName(withSpace)).toBe("Real Title (2013) [10.1_2].pdf");
+  });
+
+  it("uses the caller's title when libgen truncated its own name", () => {
+    // Exactly what libgen sent for the GPU Voronoi paper: the conference name
+    // fills the prefix and the real title is elided to "...".
+    const truncated =
+      "[ACM Press the 26th annual conference - Not Known (1999..-..)] " +
+      "Proceedings of the 26th annual co...{Hoff, Kenneth E._ Keyser, John...{40060 (1999).pdf";
+
+    expect(
+      buildDownloadFileName(
+        truncated,
+        MAX_FILE_NAME_LENGTH,
+        "Fast computation of generalized Voronoi diagrams using graphics hardware"
+      )
+    ).toBe("Fast computation of generalized Voronoi diagrams using graphics hardware (1999).pdf");
+  });
+
+  it("keeps the year and DOI from the name even when the title is supplied", () => {
+    expect(buildDownloadFileName(LIBGEN_NAME, MAX_FILE_NAME_LENGTH, "A Better Title")).toBe(
+      "A Better Title (1999) [10.1080_10867651.1999.10487509].pdf"
+    );
+  });
+
+  it("ignores a blank caller title rather than producing an empty name", () => {
+    expect(buildDownloadFileName("simple book.epub", MAX_FILE_NAME_LENGTH, "   ")).toBe(
+      "simple book.epub"
+    );
+  });
+
   it("repairs the encoding before rebuilding", () => {
     expect(buildDownloadFileName(asMojibake("Tödliche Zahlen{Autor}(2001)[10.1_2]{7}.pdf"))).toBe(
       "Tödliche Zahlen (2001) [10.1_2].pdf"

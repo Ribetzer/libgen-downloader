@@ -21,6 +21,8 @@ import { delay } from "../../utilities";
 interface downloadFileArguments {
   downloadStream: Response;
   outputDirectory: string;
+  /** The caller's own title, used when libgen's filename has lost it. */
+  preferredTitle?: string;
   onStart: (filename: string, total: number) => void;
   onProgress: (filename: string, receivedBytes: number, total: number) => void;
 }
@@ -73,6 +75,7 @@ const resolveTargetPath = async (outputDirectory: string, fileName: string, tota
 export const downloadFile = async ({
   downloadStream,
   outputDirectory,
+  preferredTitle,
   onStart,
   onProgress,
 }: downloadFileArguments): Promise<DownloadResult> => {
@@ -87,7 +90,11 @@ export const downloadFile = async ({
     MIN_FILE_NAME_LENGTH,
     Math.min(MAX_FILE_NAME_LENGTH, MAX_PATH_LENGTH - outputDirectory.length)
   );
-  const filename = buildDownloadFileName(parsedContentDisposition.parameters.filename, nameBudget);
+  const filename = buildDownloadFileName(
+    parsedContentDisposition.parameters.filename,
+    nameBudget,
+    preferredTitle
+  );
 
   const total = Number(downloadStream.headers.get("content-length") || 0);
 
@@ -170,6 +177,7 @@ export const readRetryAfterMs = (header: string | null): number | undefined => {
 interface TransferArguments {
   downloadURL: string;
   outputDirectory: string;
+  preferredTitle?: string;
   retryDelayMs: number;
   throttleBackoffMs: number[];
   onStart: (filename: string, total: number) => void;
@@ -184,6 +192,7 @@ type TransferOutcome =
 const transferFile = async ({
   downloadURL,
   outputDirectory,
+  preferredTitle,
   retryDelayMs,
   throttleBackoffMs,
   onStart,
@@ -213,6 +222,7 @@ const transferFile = async ({
       const result = await downloadFile({
         downloadStream,
         outputDirectory,
+        preferredTitle,
         onStart,
         onProgress,
       });
@@ -268,6 +278,7 @@ interface DownloadByMD5Arguments {
   md5: string;
   candidates: MirrorCandidate[];
   outputDirectory: string;
+  preferredTitle?: string;
   onStart: (filename: string, total: number) => void;
   onProgress: (filename: string, receivedBytes: number, total: number) => void;
   onMirrorTry?: (mirrorSource: string) => void;
@@ -290,6 +301,7 @@ export const downloadByMD5 = async ({
   md5,
   candidates,
   outputDirectory,
+  preferredTitle,
   onStart,
   onProgress,
   onMirrorTry,
@@ -321,6 +333,7 @@ export const downloadByMD5 = async ({
     const transferOutcome = await transferFile({
       downloadURL: resolveResult.downloadURL,
       outputDirectory,
+      preferredTitle,
       retryDelayMs,
       throttleBackoffMs,
       onStart,
