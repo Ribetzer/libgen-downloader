@@ -39,6 +39,11 @@ export const VOLUME_CHECK_TTL_MS = 5000;
 // until the next tick.
 export const QUEUE_RETRY_MS = 15_000;
 
+// How long to wait on the library service before showing results unannotated.
+// Short on purpose: knowing a paper is already held is useful, waiting for it
+// is not.
+export const CORPUS_TIMEOUT_MS = 5000;
+
 export const SEARCH_PAGE_SIZE = 25;
 
 // The editions tab honours `res` and `page`, so a periodical is collected a

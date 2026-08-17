@@ -201,6 +201,26 @@ th.nowrap {
   border: 1px solid currentColor;
 }
 
+/* A result the library already holds. Muted rather than hidden: it stays
+   downloadable, because wanting a second copy is a legitimate choice. */
+tbody tr.owned .title > div:first-child {
+  color: var(--muted);
+}
+
+.chip-owned {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  color: var(--green);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
 .chip.queued {
   color: var(--muted);
 }

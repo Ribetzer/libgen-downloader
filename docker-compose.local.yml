@@ -46,7 +46,13 @@ services:
       - VPN_SERVICE_PROVIDER=custom
       - VPN_TYPE=wireguard
       - TZ=Europe/London
-      - NET_LOCAL=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+      # Subnets reachable WITHOUT going through the tunnel. Needed to reach
+      # anything on the LAN - the research corpus for LIBGEN_CORPUS_URL, a NAS
+      # share, a local Ollama. Verified against gluetun's own settings dump:
+      # the name is FIREWALL_OUTBOUND_SUBNETS. `NET_LOCAL` is NOT a gluetun
+      # setting and is silently ignored, which leaves every LAN address
+      # unreachable while looking configured.
+      - FIREWALL_OUTBOUND_SUBNETS=${LAN_SUBNET:-192.168.1.0/24}
       # DNS-over-TLS left on deliberately: name resolution then travels inside
       # the tunnel, which is what defeats an ISP intercepting libgen lookups.
     volumes:
@@ -70,6 +76,17 @@ services:
       - TZ=Europe/London
       - LIBGEN_PORT=8095
       - LIBGEN_VOLUME_MARKER=.libgen-volume
+      # A library service that can say which results are already held, so the UI
+      # marks them before you download a second copy. Unset means the UI simply
+      # does not show that.
+      #
+      # Use the host's LAN address, e.g. http://192.168.1.50:8000 - NOT
+      # localhost (which is gluetun's, since this container shares its network
+      # namespace) and NOT host.docker.internal: Docker refuses extra_hosts
+      # alongside `network_mode: service:`, so that name cannot be mapped here.
+      # A private-range address works despite the VPN because gluetun's
+      # NET_LOCAL keeps those subnets off the tunnel.
+      - LIBGEN_CORPUS_URL=${LIBGEN_CORPUS_URL:-}
     volumes:
       - ./docker-data/config:/config
       - D:/Papers/inbox:/downloads

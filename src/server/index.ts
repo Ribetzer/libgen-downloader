@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { parseMD5List } from "../api/data/file";
 import { extractMD5 } from "../api/data/md5";
+import { CorpusService } from "./corpus-service";
 import { ItemStore, QueueItem } from "./database";
 import { MirrorService } from "./mirror-service";
 import { QueueService } from "./queue-service";
@@ -21,6 +22,9 @@ const VOLUME_MARKER = process.env.LIBGEN_VOLUME_MARKER || "";
 // Told about every finished item, so an indexer downstream does not have to
 // poll /api/history. Unset means no notification is sent.
 const WEBHOOK_URL = process.env.LIBGEN_WEBHOOK_URL || "";
+// A library service that can say which results are already held. Unset simply
+// means the UI does not show that, rather than being an error.
+const CORPUS_URL = process.env.LIBGEN_CORPUS_URL || "";
 const MIRROR_REFRESH_MS = 60 * 60 * 1000;
 const MIRROR_RETRY_MS = 30 * 1000;
 const HISTORY_LIMIT = 500;
@@ -37,6 +41,7 @@ fs.mkdirSync(CONFIG_DIRECTORY, { recursive: true });
 const store = new ItemStore(path.join(CONFIG_DIRECTORY, "libgen-downloader.db"));
 const mirrors = new MirrorService();
 const storage = new StorageService({ directory: OUTPUT_DIRECTORY, marker: VOLUME_MARKER });
+const corpus = new CorpusService({ url: CORPUS_URL });
 
 const notifyFinished = (item: QueueItem) => {
   if (!WEBHOOK_URL) {
@@ -223,6 +228,14 @@ const resolveRequestedItem = async (
   return { md5: first.md5, title: item.title || first.title || "" };
 };
 
+/**
+ * Proxied rather than called from the browser so the page stays same-origin -
+ * no CORS to arrange on the other service, and its address stays server-side.
+ */
+const handleOwnedPost = async (request: Request): Promise<Response> => {
+  return json(await corpus.owned(await request.text()));
+};
+
 const handleQueuePost = async (request: Request): Promise<Response> => {
   const body = (await request.json()) as { items?: QueueRequestItem[] };
   const requested = body.items || [];
@@ -320,6 +333,10 @@ const handleRequest = async (request: Request): Promise<Response> => {
 
   if (pathname === "/api/queue/md5-list" && request.method === "POST") {
     return handleMD5ListPost(request);
+  }
+
+  if (pathname === "/api/corpus/owned" && request.method === "POST") {
+    return handleOwnedPost(request);
   }
 
   const cancelMatch = pathname.match(/^\/api\/queue\/(\d+)$/);

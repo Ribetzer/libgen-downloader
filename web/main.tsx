@@ -31,6 +31,8 @@ interface QueueItem {
 interface SearchItem {
   md5: string;
   title: string;
+  articleTitle: string;
+  doi: string;
   authors: string;
   publisher: string;
   year: string;
@@ -116,6 +118,8 @@ const App = () => {
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState("");
   const [results, setResults] = useState<SearchItem[]>([]);
+  // Indices of results the library already holds.
+  const [owned, setOwned] = useState<Set<number>>(new Set());
   const [queueItems, setQueueItems] = useState<QueueItem[]>([]);
   const [history, setHistory] = useState<QueueItem[]>([]);
   const [uploadNote, setUploadNote] = useState("");
@@ -175,6 +179,31 @@ const App = () => {
     return () => source.close();
   }, [loadHistory]);
 
+  /**
+   * Flags results the library already holds. Deliberately after the results are
+   * rendered rather than before: knowing you already own something is useful,
+   * but waiting on a second service before showing any results is not.
+   */
+  const markOwned = useCallback(async (items: SearchItem[]) => {
+    try {
+      const response = await fetch("/api/corpus/owned", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          // articleTitle, not title: LibGen's file search puts the journal and
+          // issue in `title` and the real one after a slash, so matching on
+          // `title` would compare "ACM Transactions on Graphics 2002-jul…"
+          // against a catalogue of article titles and never hit.
+          items: items.map((item) => ({ title: item.articleTitle, doi: item.doi })),
+        }),
+      });
+      const payload = (await response.json()) as { owned?: number[] };
+      setOwned(new Set(payload.owned || []));
+    } catch {
+      // No library configured, or it is down. The results stand on their own.
+    }
+  }, []);
+
   const search = useCallback(async () => {
     if (query.trim().length < 3) {
       setSearchError("Type at least 3 characters, a DOI, or issuesid:… issuevolume:…");
@@ -193,16 +222,20 @@ const App = () => {
         return;
       }
 
-      setResults(payload.items || []);
-      if ((payload.items || []).length === 0) {
+      const items = payload.items || [];
+      setResults(items);
+      setOwned(new Set());
+      if (items.length === 0) {
         setSearchError("Nothing found on any mirror");
+      } else {
+        void markOwned(items);
       }
     } catch (error) {
       setSearchError(String(error));
     } finally {
       setSearching(false);
     }
-  }, [query]);
+  }, [query, markOwned]);
 
   const enqueue = useCallback(async (items: { md5: string; title: string }[]) => {
     await fetch("/api/queue", {
@@ -334,13 +367,16 @@ const App = () => {
                 </tr>
               </thead>
               <tbody>
-                {results.map((item) => (
-                  <tr key={item.md5}>
+                {results.map((item, index) => (
+                  <tr key={item.md5} className={owned.has(index) ? "owned" : undefined}>
                     <td className="title">
-                      <div>{item.title}</div>
+                      <div>
+                        {item.articleTitle || item.title}
+                        {owned.has(index) && <span className="chip-owned">in corpus</span>}
+                      </div>
                       <div className="md5">
                         {item.authors}
-                        {item.publisher && ` · ${item.publisher}`}
+                        {item.doi && ` · ${item.doi}`}
                       </div>
                     </td>
                     <td className="nowrap">{item.year}</td>
@@ -352,7 +388,7 @@ const App = () => {
                           className="small"
                           onClick={() => void enqueue([{ md5: item.md5, title: item.title }])}
                         >
-                          Queue
+                          {owned.has(index) ? "Queue anyway" : "Queue"}
                         </button>
                       </div>
                     </td>
