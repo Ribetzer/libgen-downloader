@@ -23,3 +23,8 @@ wireguard/
 # Local container state and downloads
 docker-data/
 downloads/
+
+# Compose reads this automatically for ${...} substitution. It holds this
+# machine's addresses, so it stays local; .env.example is the committed copy.
+.env
+!.env.example
