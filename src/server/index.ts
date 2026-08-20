@@ -236,6 +236,20 @@ const handleOwnedPost = async (request: Request): Promise<Response> => {
   return json(await corpus.owned(await request.text()));
 };
 
+/** The `id` from a JSON body, or undefined when there is no usable body. */
+const readOptionalId = async (request: Request): Promise<number | undefined> => {
+  try {
+    const body = (await request.json()) as { id?: unknown };
+    if (typeof body?.id === "number" && Number.isInteger(body.id)) {
+      return body.id;
+    }
+  } catch {
+    // No body at all is how "retry everything" is expressed.
+  }
+
+  return undefined;
+};
+
 const handleQueuePost = async (request: Request): Promise<Response> => {
   const body = (await request.json()) as { items?: QueueRequestItem[] };
   const requested = body.items || [];
@@ -358,9 +372,32 @@ const handleRequest = async (request: Request): Promise<Response> => {
   }
 
   if (pathname === "/api/history/retry" && request.method === "POST") {
+    // An `id` retries exactly that row. Without one this still retries every
+    // failure, which is right when they are all genuinely outstanding and
+    // wrong when they are not - hence the per-row control.
+    const requestedId = await readOptionalId(request);
+    if (requestedId !== undefined) {
+      const item = store.get(requestedId);
+      if (!item || item.status !== "failed") {
+        return json({ error: "No failed item with that id" }, 404);
+      }
+
+      const added = queue.addMany([{ md5: item.md5, title: item.title }]);
+      return json({ added });
+    }
+
     const failed = store.listFailed();
     const added = queue.addMany(failed.map((item) => ({ md5: item.md5, title: item.title })));
     return json({ added });
+  }
+
+  if (pathname === "/api/history/dismiss" && request.method === "POST") {
+    const requestedId = await readOptionalId(request);
+    if (requestedId === undefined) {
+      return json({ error: "An id is required" }, 400);
+    }
+
+    return json({ dismissed: store.dismiss(requestedId) });
   }
 
   if (pathname === "/api/events") {

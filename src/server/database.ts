@@ -194,6 +194,24 @@ export class ItemStore {
     this.database.run(`UPDATE items SET ${assignments.join(", ")} WHERE id = ?`, [...values, id]);
   }
 
+  /**
+   * Take one failed item out of the retry set without retrying it.
+   *
+   * "Retry all" is the wrong tool when the failures are not equivalent: two
+   * rows can be the same file queued twice, and a third can already have been
+   * fetched by hand since. Dismissing marks the row `cancelled`, so it leaves
+   * `listFailed` and the count without pretending it succeeded.
+   */
+  dismiss(id: number): boolean {
+    const result = this.database.run(
+      `UPDATE items SET status = 'cancelled', updated_at = datetime('now')
+        WHERE id = ? AND status = 'failed'`,
+      [id]
+    );
+
+    return result.changes > 0;
+  }
+
   /** Only a waiting item can be dropped; one in flight is left to finish. */
   cancel(id: number): boolean {
     const result = this.database.run(

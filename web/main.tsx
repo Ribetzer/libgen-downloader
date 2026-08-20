@@ -71,7 +71,17 @@ const Chip = ({ status }: { status: string }) => (
   <span className={`chip ${status}`}>{statusLabel(status)}</span>
 );
 
-const ItemRows = ({ items, onCancel }: { items: QueueItem[]; onCancel?: (id: number) => void }) => (
+const ItemRows = ({
+  items,
+  onCancel,
+  onRetry,
+  onDismiss,
+}: {
+  items: QueueItem[];
+  onCancel?: (id: number) => void;
+  onRetry?: (id: number) => void;
+  onDismiss?: (id: number) => void;
+}) => (
   <>
     {items.map((item) => {
       let percentage = 0;
@@ -102,6 +112,20 @@ const ItemRows = ({ items, onCancel }: { items: QueueItem[]; onCancel?: (id: num
               {onCancel && item.status === "queued" && (
                 <button className="small" onClick={() => onCancel(item.id)}>
                   Cancel
+                </button>
+              )}
+              {onRetry && item.status === "failed" && (
+                <button className="small" onClick={() => onRetry(item.id)}>
+                  Retry
+                </button>
+              )}
+              {onDismiss && item.status === "failed" && (
+                <button
+                  className="small dismiss"
+                  title="Remove from the failed list without retrying"
+                  onClick={() => onDismiss(item.id)}
+                >
+                  &#215;
                 </button>
               )}
             </div>
@@ -270,6 +294,30 @@ const App = () => {
     await fetch("/api/history/retry", { method: "POST" });
     void loadHistory();
   }, [loadHistory]);
+
+  const retryOne = useCallback(
+    async (id: number) => {
+      await fetch("/api/history/retry", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      void loadHistory();
+    },
+    [loadHistory]
+  );
+
+  const dismissOne = useCallback(
+    async (id: number) => {
+      await fetch("/api/history/dismiss", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      void loadHistory();
+    },
+    [loadHistory]
+  );
 
   const failedCount = useMemo(
     () => history.filter((item) => item.status === "failed").length,
@@ -466,7 +514,11 @@ const App = () => {
           {history.length > 0 && (
             <table>
               <tbody>
-                <ItemRows items={history} />
+                <ItemRows
+                  items={history}
+                  onRetry={(id) => void retryOne(id)}
+                  onDismiss={(id) => void dismissOne(id)}
+                />
               </tbody>
             </table>
           )}

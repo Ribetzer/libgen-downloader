@@ -299,6 +299,18 @@ tbody tr.owned .title > div:first-child {
   justify-content: flex-end;
 }
 
+/* The destructive one of the pair, so it reads as such next to Retry. */
+.small.dismiss {
+  padding-inline: 10px;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--red);
+}
+
+.small.dismiss:hover {
+  border-color: var(--red);
+}
+
 .status-dot {
   display: inline-block;
   width: 8px;

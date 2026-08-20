@@ -134,6 +134,27 @@ describe("ItemStore", () => {
     expect(store.cancel(queued.id)).toBe(true);
     expect(store.cancel(running.id)).toBe(false);
   });
+
+  it("drops a dismissed failure out of the retry set", () => {
+    // Retrying every failure is wrong when they are not equivalent: the same
+    // file queued twice leaves two rows, and a third may already have been
+    // fetched by hand. Dismissing takes one out without claiming it succeeded.
+    const abandoned = store.add(MD5, "Not worth retrying");
+    const wanted = store.add("108804c7a0e8c28c31071f2c34269570", "Still wanted");
+    store.update(abandoned.id, { status: "failed" });
+    store.update(wanted.id, { status: "failed" });
+
+    expect(store.dismiss(abandoned.id)).toBe(true);
+    expect(store.listFailed().map((item) => item.id)).toEqual([wanted.id]);
+    expect(store.get(abandoned.id)?.status).toBe("cancelled");
+  });
+
+  it("will not dismiss anything that has not failed", () => {
+    const queued = store.add(MD5, "Waiting");
+
+    expect(store.dismiss(queued.id)).toBe(false);
+    expect(store.get(queued.id)?.status).toBe("queued");
+  });
 });
 
 describe("QueueService", () => {
