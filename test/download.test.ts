@@ -32,6 +32,44 @@ afterEach(() => {
 });
 
 describe("downloadFile", () => {
+  it("gives up on a transfer that goes silent without closing", async () => {
+    // The failure this exists for: libgen stops sending but holds the socket
+    // open, so nothing ever throws, `attempt` never retries, and the whole
+    // sequential queue blocks behind one file. Observed wedged at 2.48 of
+    // 3.36 MB for an hour.
+    const destination = new Writable({
+      write(_chunk: Buffer, _encoding, callback) {
+        callback();
+      },
+    });
+    spyOn(fs, "createWriteStream").mockReturnValue(destination as fs.WriteStream);
+
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Buffer.from("partial"));
+        // Never closed, never errored - exactly the wedged case.
+      },
+    });
+    const response = new Response(body, {
+      headers: {
+        "content-disposition": 'attachment; filename="stalled.pdf"',
+        "content-length": "999999",
+      },
+    });
+
+    const promise = downloadFile({
+      downloadStream: response,
+      outputDirectory: OUTPUT_DIRECTORY,
+      stallTimeoutMs: 50,
+      onStart: () => {},
+      onProgress: () => {},
+    });
+
+    // That this returns at all is the assertion: with `Readable.from` and no
+    // watchdog the promise never settles and the test runner hangs.
+    await expect(promise).rejects.toThrow(/no data for/);
+  });
+
   it("writes every response chunk and reports progress", async () => {
     const writtenChunks: Buffer[] = [];
     const destination = new Writable({

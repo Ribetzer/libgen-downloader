@@ -23,6 +23,13 @@ export const MAX_DOWNLOAD_MIRRORS = 2;
 export const THROTTLE_BACKOFF_MS = [5000, 15_000, 45_000];
 export const MAX_RETRY_AFTER_MS = 60_000;
 
+// A transfer that stops delivering bytes without closing the socket never
+// errors, so `attempt` never sees a failure and the sequential queue blocks
+// forever - observed wedged at 2.48 of 3.36 MB for an hour, holding up 14
+// other files. Silence for this long is treated as a dead transfer, which
+// lets the ordinary retry and mirror fall-through do their job.
+export const DOWNLOAD_STALL_TIMEOUT_MS = 60_000;
+
 // Windows refuses paths past 260 characters, so the name is budgeted against
 // the directory it lands in.
 export const MAX_PATH_LENGTH = 250;

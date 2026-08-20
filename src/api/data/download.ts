@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 import type { DownloadResult } from "../models/download-result";
 import { Mirror } from "./config";
 import { buildDownloadFileName, MAX_FILE_NAME_LENGTH, withCollisionSuffix } from "./filename";
@@ -10,6 +11,7 @@ import { MirrorCandidate, resolveDownloadURL, ResolveResult } from "./resolve";
 import {
   DOWNLOAD_ATTEMPT_COUNT,
   DOWNLOAD_RETRY_DELAY_MS,
+  DOWNLOAD_STALL_TIMEOUT_MS,
   MAX_DOWNLOAD_MIRRORS,
   MAX_PATH_LENGTH,
   MAX_RETRY_AFTER_MS,
@@ -23,6 +25,8 @@ interface downloadFileArguments {
   outputDirectory: string;
   /** The caller's own title, used when libgen's filename has lost it. */
   preferredTitle?: string;
+  /** Overrides the stall watchdog, so a test need not wait a real minute. */
+  stallTimeoutMs?: number;
   onStart: (filename: string, total: number) => void;
   onProgress: (filename: string, receivedBytes: number, total: number) => void;
 }
@@ -76,6 +80,7 @@ export const downloadFile = async ({
   downloadStream,
   outputDirectory,
   preferredTitle,
+  stallTimeoutMs = DOWNLOAD_STALL_TIMEOUT_MS,
   onStart,
   onProgress,
 }: downloadFileArguments): Promise<DownloadResult> => {
@@ -117,9 +122,28 @@ export const downloadFile = async ({
   }
 
   let receivedBytes = 0;
+  // `fromWeb`, not `from`: `Readable.from` merely iterates the web stream, so
+  // destroying it on a stall leaves the reader, and the socket, pending.
+  // `fromWeb` owns the stream, and destroy propagates to it as a cancel.
+  // The cast bridges the DOM `ReadableStream` that `fetch` returns and the
+  // `node:stream/web` one `fromWeb` expects; they are the same object.
+  const source = Readable.fromWeb(downloadStream.body as unknown as NodeReadableStream<Uint8Array>);
+
+  // Destroying the source is what turns silence into an error: `pipeline`
+  // rejects, the catch below removes the partial file, and the caller's retry
+  // and mirror fall-through take it from there.
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const restartIdleWatchdog = () => {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      source.destroy(new Error(`no data for ${Math.round(stallTimeoutMs / 1000)}s`));
+    }, stallTimeoutMs);
+  };
+
   const progressStream = new Transform({
     transform(chunk: Buffer, _encoding, callback) {
       const buffer = Buffer.from(chunk);
+      restartIdleWatchdog();
       // Absolute, not a delta: a restarted transfer must not double count.
       receivedBytes += buffer.length;
       onProgress(filename, receivedBytes, total);
@@ -128,11 +152,8 @@ export const downloadFile = async ({
   });
 
   try {
-    await pipeline(
-      Readable.from(downloadStream.body, { objectMode: false }),
-      progressStream,
-      fs.createWriteStream(targetPath)
-    );
+    restartIdleWatchdog();
+    await pipeline(source, progressStream, fs.createWriteStream(targetPath));
 
     const downloadResult: DownloadResult = {
       path: targetPath,
@@ -142,11 +163,16 @@ export const downloadFile = async ({
     };
 
     return downloadResult;
-  } catch {
+  } catch (error: unknown) {
     // The file on disk is truncated at this point and would otherwise be
     // indistinguishable from a complete download.
     await removePartialFile(targetPath);
-    throw new Error(`(${filename}) Error occurred while downloading file`);
+    const reason = (error as Error)?.message || "unknown error";
+    throw new Error(`(${filename}) Error occurred while downloading file: ${reason}`, {
+      cause: error,
+    });
+  } finally {
+    clearTimeout(idleTimer);
   }
 };
 
