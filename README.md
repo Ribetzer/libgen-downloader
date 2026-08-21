@@ -119,9 +119,10 @@ The stall watchdog exists because a server that stops sending bytes *without
 closing the socket* never raises an error: `attempt()` never sees a failure and
 the whole sequential queue blocks behind one file, indefinitely.
 
-*(GitHub renders these diagrams natively. VS Code needs the
-[Markdown Preview Mermaid Support](https://marketplace.visualstudio.com/items?itemName=bierner.markdown-mermaid)
-extension.)*
+*(Rendered natively by GitHub, and by the VS Code Markdown preview since
+[1.121](https://code.visualstudio.com/updates/v1_121#_mermaid-diagrams-in-markdown-preview-and-notebooks),
+which ships a built-in `Mermaid Markdown Features` extension — no setup, and it
+pans and zooms.)*
 
 ## Features
 
