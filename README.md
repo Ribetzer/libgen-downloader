@@ -39,6 +39,90 @@ chmod +x ./libgen-downloader-macos-*
 chmod +x ./libgen-downloader-linux-*
 ```
 
+## Architecture at a glance
+
+Every entry point converges on the same store and the same download routine.
+Only `-u/--url` skips the UI entirely.
+
+```mermaid
+flowchart TD
+    CLI["cli/index.ts<br/>meow flag parsing"] --> OP["cli/operate.ts<br/>branches on flags"]
+
+    OP -->|"no flags"| SEED["seed store"]
+    OP -->|"-s / --search"| SEED
+    OP -->|"-b / -d"| SEED
+    OP -->|"--doi / --issue"| SEED
+    OP -->|"-u / --url<br/>(pure stdout)"| URLOUT["print download URL<br/>no Ink render"]
+
+    SEED --> TUI["renderTUI()<br/>Ink + React"]
+    TUI --> STORE[("Zustand store<br/>6 slices")]
+
+    STORE --> DQ["download-queue<br/>background, non-blocking"]
+    STORE --> BQ["bulk-download-queue<br/>sequential, writes md5 list"]
+
+    DQ --> DL["downloadByMD5()"]
+    BQ --> DL
+
+    SERVER["src/server<br/>HTTP API + web UI"] --> QS["QueueService"]
+    QS --> DL
+
+    DL --> ADAPTER["Adapter<br/>URL shapes, DOM selectors"]
+    ADAPTER --> MIRROR{{"LibGen mirrors"}}
+
+    style DL fill:#e8f0fe,stroke:#4c9aff
+    style STORE fill:#fff4e5,stroke:#d9a02e
+    style MIRROR fill:#f0f0f0,stroke:#888
+```
+
+Nothing outside `src/api/adapters/` knows LibGen's HTML or URL structure, so
+supporting a new mirror type is a subclass plus a case in `getAdapter()`.
+
+### Downloading one file
+
+The interesting part is the failure handling. A transfer recovers by *mirror*,
+not just by retry, and a partial file is always deleted — a truncated PDF that
+survives is indistinguishable from a complete one, which is how 16 papers once
+entered a corpus as unreadable stubs.
+
+```mermaid
+flowchart TD
+    START["downloadByMD5(md5)"] --> RESOLVE["resolveDownloadURL()<br/>walk candidate mirrors"]
+
+    RESOLVE -->|"every mirror answered,<br/>no record"| NOTFOUND["not_found<br/>(honest reason)"]
+    RESOLVE -->|"nothing answered"| UNREACH["unreachable<br/>(honest reason)"]
+    RESOLVE -->|"got a link"| FETCH["fetch(downloadURL)"]
+
+    FETCH -->|"429 / 503"| BACKOFF["throttle backoff<br/>5s / 15s / 45s"]
+    BACKOFF --> FETCH
+
+    FETCH -->|"ok"| NAME["buildDownloadFileName()<br/>repair mojibake, trim TITLE only"]
+    NAME --> STREAM["pipeline(source, progress, file)"]
+
+    STREAM -.->|"60s with no bytes"| STALL["stall watchdog<br/>destroy source"]
+    STALL --> PARTIAL
+
+    STREAM -->|"error"| PARTIAL["removePartialFile()<br/>a short file is deleted,<br/>never kept"]
+    PARTIAL --> RETRY{"attempts left?"}
+    RETRY -->|"yes"| FETCH
+    RETRY -->|"no"| NEXTMIRROR{"another mirror?"}
+    NEXTMIRROR -->|"yes"| RESOLVE
+    NEXTMIRROR -->|"no"| FAILED["failed"]
+
+    STREAM -->|"complete"| DONE["file on disk<br/>onProgress reports ABSOLUTE bytes"]
+
+    style STALL fill:#ffe8e8,stroke:#f05a5a
+    style PARTIAL fill:#ffe8e8,stroke:#f05a5a
+    style DONE fill:#e8f7ea,stroke:#3fb950
+```
+
+The stall watchdog exists because a server that stops sending bytes *without
+closing the socket* never raises an error: `attempt()` never sees a failure and
+the whole sequential queue blocks behind one file, indefinitely.
+
+*(GitHub renders these diagrams natively. VS Code needs the
+[Markdown Preview Mermaid Support](https://marketplace.visualstudio.com/items?itemName=bierner.markdown-mermaid)
+extension.)*
+
 ## Features
 
 - Interactive user interface.
