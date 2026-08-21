@@ -145,6 +145,12 @@ to the other services on a NAS. It offers search (text, DOI, or an
 upload by drag and drop, and a history whose failures can be retried or
 downloaded as a list.
 
+Failures are handled one at a time. Each failed row carries **Retry** and a
+dismiss control, because "retry all" assumes the failures are equivalent and
+they often are not — the same large file queued twice, next to one you already
+fetched by hand, makes the bulk button unusable. Dismissing removes a row from
+the failed set without pretending it succeeded.
+
 Run it from source:
 
 ```
@@ -156,6 +162,26 @@ then open `http://localhost:8095`. Configuration is by environment variable:
 `LIBGEN_PORT` (8095), `LIBGEN_OUTPUT_DIR` (`/downloads`), `LIBGEN_CONFIG_DIR`
 (`/config`, holds the SQLite database), `LIBGEN_VOLUME_MARKER` (below), and
 `PUID`/`PGID`/`TZ` in the container.
+
+### Driving it over HTTP
+
+The UI is a client of a small JSON API, and anything the UI does can be
+scripted:
+
+```
+GET  /api/health
+GET  /api/config           mirror, output directory, storage readiness
+GET  /api/search?q=        q may be plain text or a DOI
+POST /api/queue            {"items":[{"doi":"10.1080/10867651.1997.10487468"}]}
+GET  /api/queue            active items with progress
+GET  /api/history          finished items
+POST /api/history/retry    {} retries every failure; {"id": N} retries one
+POST /api/history/dismiss  {"id": N} drops one failure from the set
+GET  /api/history/failed.txt   an MD5 list of the failures
+```
+
+`POST /api/queue` resolves a DOI to an MD5 for you, so a caller that knows only
+citations never has to touch the search endpoint.
 
 ### Downloading to a removable disk
 

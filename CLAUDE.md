@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+**Long-form background lives in `CLAUDE-DETAILED.md`** — the measurements behind
+each rule here, the failures that produced them, and the dead ends. Read it
+before overriding anything below that looks arbitrary.
+
 ## Commands
 
 Bun is the package manager, test runner, and bundler (`bun.lock` is the only lockfile).
@@ -87,8 +91,14 @@ Both queues delegate to one routine, `downloadByMD5()` in `src/api/data/download
 
 MD5s are always derived through `src/api/data/md5.ts` (`extractMD5` for text, `getMD5FromURL` for adapter URLs) — never by hand-slicing a string, which is how CRLF endings used to reach the query.
 
-Two invariants worth preserving:
+Three invariants worth preserving:
 
+- **A silent transfer must time out.** `DOWNLOAD_STALL_TIMEOUT_MS` (60s of no
+  bytes) destroys the source so `pipeline` rejects. Without it a server that
+  stops sending without closing never errors, `attempt` never retries, and the
+  sequential queue blocks forever. The source is wrapped with
+  `Readable.fromWeb`, not `Readable.from` — `from` only iterates a web stream,
+  so destroying it leaks the reader and the socket.
 - **Progress is absolute, not incremental.** `onProgress(filename, receivedBytes, total)` reports the byte count for the *current* attempt and the stores assign it. Reintroducing deltas brings back >100% readings whenever a transfer restarts or moves mirror.
 - **Names come from `src/api/data/filename.ts`.** `buildDownloadFileName` repairs the ISO-8859-1/UTF-8 mojibake, rebuilds `Title (Year) [DOI].ext`, sanitizes for Windows, and trims the *title* so the extension always survives. The output directory (config slice, `outputDirectory`) is resolved once at startup and threaded through `downloadByMD5`; nothing should write to `./` directly.
 
@@ -102,9 +112,28 @@ Downloads recover by mirror, not just by retry. `resolveDownloadURL()` (`src/api
 
 Search failures are handled separately: `adapter.detectConnectionError()` inspects the parsed page, and on a mirror-level error `handleSearchSubmit` drives `switchMirror()`, which test-searches each remaining mirror, swaps in the new adapter, clears the cache, and retries once — with `mirrorCheckStates` feeding the failover UI.
 
+### Web UI and HTTP API (`src/server/`, `web/`)
+
+`src/server/index.ts` serves `/api/*` and the built UI; one SQLite table holds
+both the queue and the history, separated by status. `TERMINAL_STATUSES` decides
+which is which, and `recoverInterrupted()` requeues anything left mid-flight by
+a restart.
+
+Failure handling is per row, not per batch. `POST /api/history/retry` takes an
+optional `id`; `POST /api/history/dismiss` marks one row `cancelled` so it
+leaves the failed set **without pretending it succeeded**. `dismiss` is guarded
+to `failed` rows exactly as `cancel` is guarded to `queued` ones.
+
+`POST /api/queue` accepts `{"doi": …}` as well as `{"md5": …}`, which is how the
+paired RAG corpus re-fetches truncated papers without a human in the loop.
+
 ## Conventions
 
 - ESLint enforces `no-ternary` (hence the `if` blocks and inline IIFEs used to compute values) and `react/no-multi-comp` (one component per file). `unicorn/recommended` is on, so use `node:` protocol imports; `process.exit` needs an explicit disable comment.
 - Double quotes, semicolons, unix linebreaks, Prettier `printWidth: 100`.
 - Files and directories are kebab-case; store slices export `create<X>Slice` + `initial<X>State`.
 - Tests use `bun:test` and never touch the network: they `spyOn(globalThis, "fetch")` and reset the bound store with `useBoundStore.setState({ ...initialStates }, true)` in `beforeEach`/`afterEach`. Integration tests drive store actions directly rather than rendering Ink.
+- **Do not run `lint --fix` to clear the CRLF errors.** ESLint enforces
+  `linebreak-style: LF` and the Windows working tree is CRLF, so a local run
+  reports thousands of errors in files nobody touched; CI checks out LF and
+  passes. Lint your own files with `--rule '{"linebreak-style":"off"}'`.
