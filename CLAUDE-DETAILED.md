@@ -43,10 +43,29 @@ Two things follow:
 
 - **A short file is deleted, not kept.** `removePartialFile` on any transfer
   error. These 16 predate that.
-- **The test for a broken PDF is `page_count`, not the trailer.** A missing
-  trailer in the last few KB looks like the signature until you check healthy
-  files: linearized PDFs and cross-reference streams legitimately put it
-  elsewhere, and four good files trip it. Zero readable pages is the real fault.
+- **A page count cannot tell you a file is sound.** PyMuPDF is lenient in both
+  directions, and a download has two ways to be broken that it happily reads:
+
+  *Truncated.* A JGT paper arrived 2,238 bytes short — exactly the xref table
+  and trailer. PyMuPDF opened it, reported 12 pages and returned 5,011
+  characters of real text; Docling refused it as "not valid". Readable and
+  broken at once. Re-fetching by DOI produced a byte-identical body plus the
+  missing tail, which is what confirmed the cause.
+
+  *Not a PDF at all.* Three files were ACM "Session details" sign-in pages
+  saved with a `.pdf` extension. PyMuPDF **renders HTML**, so it laid each one
+  out and reported 11 pages. Every page-based check passed on a file that was
+  never a PDF. Any mirror error page, sign-in wall or interstitial lands this
+  way.
+
+  So use two cheap byte tests, not a parse:
+
+  - **`%PDF` in the first bytes** — catches the HTML case.
+  - **`%%EOF` and `startxref` both absent from the last 4 KB** — catches
+    truncation. Measured over the 1,278-PDF corpus this matched exactly one
+    file, the broken one, with no false positives. Searching for the `trailer`
+    keyword instead is too loose and produced four, because linearized PDFs and
+    cross-reference streams legitimately put it elsewhere.
 
 ### Progress is absolute, never a delta
 
