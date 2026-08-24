@@ -34,6 +34,8 @@ interface downloadFileArguments {
   outputDirectory: string;
   /** The caller's own title, used when libgen's filename has lost it. */
   preferredTitle?: string;
+  /** The caller's own DOI, used when libgen's filename carries none. */
+  preferredDOI?: string;
   /** Overrides the stall watchdog, so a test need not wait a real minute. */
   stallTimeoutMs?: number;
   /**
@@ -118,6 +120,7 @@ export const downloadFile = async ({
   downloadStream,
   outputDirectory,
   preferredTitle,
+  preferredDOI,
   stallTimeoutMs = DOWNLOAD_STALL_TIMEOUT_MS,
   resumeFromBytes = 0,
   onPartPath,
@@ -138,7 +141,8 @@ export const downloadFile = async ({
   const filename = buildDownloadFileName(
     parsedContentDisposition.parameters.filename,
     nameBudget,
-    preferredTitle
+    preferredTitle,
+    preferredDOI
   );
 
   // A resumed response describes only the slice it is sending, so the size of
@@ -285,6 +289,7 @@ interface TransferArguments {
   downloadURL: string;
   outputDirectory: string;
   preferredTitle?: string;
+  preferredDOI?: string;
   throttleBackoffMs: number[];
   /**
    * Spacing between restarts, indexed by attempt and clamped at the last
@@ -340,6 +345,7 @@ const transferFile = async ({
   downloadURL,
   outputDirectory,
   preferredTitle,
+  preferredDOI,
   throttleBackoffMs,
   backoffMs,
   deadline,
@@ -387,6 +393,7 @@ const transferFile = async ({
         downloadStream,
         outputDirectory,
         preferredTitle,
+        preferredDOI,
         resumeFromBytes,
         onPartPath: (resolvedPartPath) => {
           partPath = resolvedPartPath;
@@ -465,6 +472,7 @@ interface DownloadByMD5Arguments {
   candidates: MirrorCandidate[];
   outputDirectory: string;
   preferredTitle?: string;
+  preferredDOI?: string;
   onStart: (filename: string, total: number) => void;
   onProgress: (filename: string, receivedBytes: number, total: number) => void;
   onMirrorTry?: (mirrorSource: string) => void;
@@ -491,6 +499,7 @@ export const downloadByMD5 = async ({
   candidates,
   outputDirectory,
   preferredTitle,
+  preferredDOI,
   onStart,
   onProgress,
   onMirrorTry,
@@ -546,6 +555,7 @@ export const downloadByMD5 = async ({
       downloadURL: resolveResult.downloadURL,
       outputDirectory,
       preferredTitle,
+      preferredDOI,
       throttleBackoffMs,
       backoffMs: effectiveBackoffMs,
       deadline,

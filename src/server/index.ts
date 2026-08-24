@@ -202,18 +202,18 @@ interface QueueRequestItem {
  */
 const resolveRequestedItem = async (
   item: QueueRequestItem
-): Promise<{ md5: string; title: string } | { reason: string }> => {
+): Promise<{ md5: string; title: string; doi: string } | { reason: string }> => {
+  const requestedDOI = (item.doi || "").trim();
   const md5 = extractMD5(item.md5 || "");
   if (md5) {
-    return { md5, title: item.title || "" };
+    return { md5, title: item.title || "", doi: requestedDOI };
   }
 
-  const doi = (item.doi || "").trim();
-  if (!doi) {
+  if (!requestedDOI) {
     return { reason: "no usable md5 or doi" };
   }
 
-  const outcome = await runSearch(mirrors, doi, 1);
+  const outcome = await runSearch(mirrors, requestedDOI, 1);
   if (outcome.status === "error") {
     return { reason: outcome.message };
   }
@@ -222,10 +222,16 @@ const resolveRequestedItem = async (
   // The first is what the mirror ranks highest.
   const [first] = outcome.items;
   if (!first) {
-    return { reason: `no file on any mirror for ${doi}` };
+    return { reason: `no file on any mirror for ${requestedDOI}` };
   }
 
-  return { md5: first.md5, title: item.title || first.title || "" };
+  // The mirror's own record often knows the DOI even when the caller queued by
+  // MD5, so take it from there rather than lose it.
+  return {
+    md5: first.md5,
+    title: item.title || first.title || "",
+    doi: requestedDOI || first.doi || "",
+  };
 };
 
 /**
@@ -254,7 +260,7 @@ const handleQueuePost = async (request: Request): Promise<Response> => {
   const body = (await request.json()) as { items?: QueueRequestItem[] };
   const requested = body.items || [];
 
-  const accepted: { md5: string; title: string }[] = [];
+  const accepted: { md5: string; title: string; doi: string }[] = [];
   const rejected: { input: string; reason: string }[] = [];
 
   for (const item of requested) {
@@ -382,12 +388,14 @@ const handleRequest = async (request: Request): Promise<Response> => {
         return json({ error: "No failed item with that id" }, 404);
       }
 
-      const added = queue.addMany([{ md5: item.md5, title: item.title }]);
+      const added = queue.addMany([{ md5: item.md5, title: item.title, doi: item.doi }]);
       return json({ added });
     }
 
     const failed = store.listFailed();
-    const added = queue.addMany(failed.map((item) => ({ md5: item.md5, title: item.title })));
+    const added = queue.addMany(
+      failed.map((item) => ({ md5: item.md5, title: item.title, doi: item.doi }))
+    );
     return json({ added });
   }
 

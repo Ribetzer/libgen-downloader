@@ -104,15 +104,15 @@ export class QueueService {
     this.publish(id, "item-updated");
   }
 
-  add(md5: string, title = ""): QueueItem {
-    const item = this.store.add(md5, title);
+  add(md5: string, title = "", doi = ""): QueueItem {
+    const item = this.store.add(md5, title, doi);
     this.emit({ type: "item-added", item });
     this.start();
     return item;
   }
 
-  addMany(entries: { md5: string; title?: string }[]): QueueItem[] {
-    return entries.map((entry) => this.add(entry.md5, entry.title || ""));
+  addMany(entries: { md5: string; title?: string; doi?: string }[]): QueueItem[] {
+    return entries.map((entry) => this.add(entry.md5, entry.title || "", entry.doi || ""));
   }
 
   cancel(id: number): boolean {
@@ -200,6 +200,10 @@ export class QueueService {
       // Whoever queued this usually knows the real title - a DOI lookup
       // certainly does - and libgen's own filename often does not.
       preferredTitle: item.title,
+      // Written into the filename when libgen's own name carries no DOI, which
+      // is how the identifier reaches the RAG: `paper_id` decodes
+      // `[10.1007_978-3-030-31154-4]` straight out of the name.
+      preferredDOI: item.doi,
       onStart: (filename, total) => {
         this.change(item.id, { status: "downloading", filename, total, progress: 0 });
       },

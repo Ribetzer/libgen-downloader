@@ -63,11 +63,21 @@ const splitExtension = (value: string) => {
  * title, the year and the DOI leaves a name that reads well and still traces
  * back to the record.
  */
-const readMetadata = (stem: string) => {
+const readMetadata = (stem: string, fallbackDOI = "") => {
   const withoutMirror = stem.replace(MIRROR_SUFFIX_PATTERN, "");
 
   const year = withoutMirror.match(YEAR_PATTERN)?.[1];
-  const doi = withoutMirror.match(DOI_PATTERN)?.[1];
+  // The name's own DOI wins - it describes this exact file. The caller's is a
+  // fallback for the common case where libgen's filename carries none, which
+  // is how a 158 MB proceedings volume reached the corpus with no identifier
+  // at all and was then mistaken for a different volume of the same series.
+  let doi = withoutMirror.match(DOI_PATTERN)?.[1];
+  if (!doi && fallbackDOI.trim()) {
+    // Left with its slash: `sanitize` turns it into `_` with everything else
+    // Windows rejects, which is exactly the spelling the RAG's `paper_id`
+    // reads back out of the name.
+    doi = fallbackDOI.trim();
+  }
 
   // The series prefix would otherwise be mistaken for the title and eat the
   // length budget, truncating the title that was actually wanted.
@@ -135,11 +145,12 @@ const sanitize = (value: string): string => {
 export const buildDownloadFileName = (
   rawName: string,
   maxLength: number = MAX_FILE_NAME_LENGTH,
-  preferredTitle = ""
+  preferredTitle = "",
+  preferredDOI = ""
 ): string => {
   const repaired = repairEncoding(rawName);
   const { stem, extension } = splitExtension(repaired);
-  const metadata = readMetadata(stem);
+  const metadata = readMetadata(stem, preferredDOI);
   const { suffix } = metadata;
 
   // A caller that knows the real title beats anything derivable from the name.

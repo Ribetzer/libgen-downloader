@@ -127,6 +127,38 @@ describe("buildDownloadFileName", () => {
 
     expect(result.length).toBeLessThanOrEqual(MAX_FILE_NAME_LENGTH + ".pdf".length);
   });
+
+  it("writes the caller's DOI when the source name carries none", () => {
+    // The case this exists for: libgen served a 158 MB proceedings volume with
+    // no identifier in its filename, so it reached the corpus anonymous and was
+    // mistaken for a different volume of the same series. The queue knew the
+    // DOI all along.
+    const result = buildDownloadFileName(
+      "Design Tools and Methods in Industrial Engineering.pdf",
+      MAX_FILE_NAME_LENGTH,
+      "",
+      "10.1007/978-3-030-31154-4"
+    );
+
+    expect(result).toBe(
+      "Design Tools and Methods in Industrial Engineering [10.1007_978-3-030-31154-4].pdf"
+    );
+  });
+
+  it("prefers the DOI in the name over the caller's", () => {
+    // The name describes this exact file; the caller's DOI is a fallback, and
+    // a queue row can be wrong about which file a DOI resolved to.
+    const result = buildDownloadFileName("Paper[10.1111/real]{9}.pdf", 120, "", "10.9999/wrong");
+
+    expect(result).toBe("Paper [10.1111_real].pdf");
+  });
+
+  it("keeps the DOI when the title has to be trimmed to fit", () => {
+    const result = buildDownloadFileName("A".repeat(300) + ".pdf", 60, "", "10.1007/x");
+
+    expect(result.endsWith(" [10.1007_x].pdf")).toBe(true);
+    expect(result.length).toBeLessThanOrEqual(60 + ".pdf".length);
+  });
 });
 
 describe("withCollisionSuffix", () => {

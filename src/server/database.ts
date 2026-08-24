@@ -16,6 +16,14 @@ export interface QueueItem {
   id: number;
   md5: string;
   title: string;
+  /**
+   * The DOI this item was queued by, when it was. Kept because it is the only
+   * unique identifier in the whole pipeline: the RAG's `paper_id` decodes
+   * `[10.1080_10867651.2001...]` straight out of the filename, and a DOI is
+   * what separates two volumes of one series that GROBID titles identically.
+   * Resolving it to an MD5 and then dropping it lost that for good.
+   */
+  doi: string;
   status: ItemStatus;
   filename: string;
   mirror: string;
@@ -30,6 +38,7 @@ interface ItemRow {
   id: number;
   md5: string;
   title: string | null;
+  doi: string | null;
   status: string;
   filename: string | null;
   mirror: string | null;
@@ -44,6 +53,7 @@ const toQueueItem = (row: ItemRow): QueueItem => ({
   id: row.id,
   md5: row.md5,
   title: row.title || "",
+  doi: row.doi || "",
   status: row.status as ItemStatus,
   filename: row.filename || "",
   mirror: row.mirror || "",
@@ -69,6 +79,7 @@ export class ItemStore {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         md5 TEXT NOT NULL,
         title TEXT,
+        doi TEXT,
         status TEXT NOT NULL,
         filename TEXT,
         mirror TEXT,
@@ -79,6 +90,14 @@ export class ItemStore {
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       )
     `);
+    // Added after the table existed, so an older database gets it here rather
+    // than through a fresh CREATE. Duplicate-column is the expected outcome on
+    // every run after the first.
+    try {
+      this.database.run("ALTER TABLE items ADD COLUMN doi TEXT");
+    } catch {
+      // already applied
+    }
     this.database.run("CREATE INDEX IF NOT EXISTS items_status ON items (status)");
   }
 
@@ -97,13 +116,13 @@ export class ItemStore {
     return result.changes;
   }
 
-  add(md5: string, title: string): QueueItem {
+  add(md5: string, title: string, doi = ""): QueueItem {
     const row = this.database
       .query<
         ItemRow,
-        [string, string]
-      >("INSERT INTO items (md5, title, status) VALUES (?, ?, 'queued') RETURNING *")
-      .get(md5, title);
+        [string, string, string]
+      >("INSERT INTO items (md5, title, doi, status) VALUES (?, ?, ?, 'queued') RETURNING *")
+      .get(md5, title, doi);
 
     return toQueueItem(row as ItemRow);
   }
