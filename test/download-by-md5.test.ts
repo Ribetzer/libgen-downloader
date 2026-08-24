@@ -5,9 +5,10 @@ import path from "node:path";
 import { Writable } from "node:stream";
 import { LibgenPlusAdapter } from "../src/api/adapters/libgen-plus-adapter";
 import { downloadByMD5, readRetryAfterMs } from "../src/api/data/download";
-import { DOWNLOAD_ATTEMPT_COUNT, MAX_RETRY_AFTER_MS } from "../src/settings";
+import { MAX_RETRY_AFTER_MS } from "../src/settings";
 import type { MirrorCandidate } from "../src/api/data/resolve";
 import { mockFetch } from "./support/fetch-mock";
+import { stubPartFileRename } from "./support/fs-mock";
 
 const MD5 = "b7abef3d085a1007a137a247dcff8dcb";
 
@@ -29,6 +30,7 @@ const fileResponse = () =>
 
 const collectWrites = () => {
   const chunks: Buffer[] = [];
+  stubPartFileRename();
   spyOn(fs, "createWriteStream").mockImplementation(
     () =>
       new Writable({
@@ -139,7 +141,7 @@ describe("downloadByMD5", () => {
     expect(retryMessages[0]).toContain("HTTP 502");
   });
 
-  it("deletes the truncated file and reports the reason when transfers keep failing", async () => {
+  it("keeps the part file between attempts and clears it once it gives up", async () => {
     mockFetch(async (input) => {
       if (input.toString().includes("/ads.php")) {
         return new Response(detailPage("first.example"));
@@ -170,11 +172,12 @@ describe("downloadByMD5", () => {
     }
     expect(outcome.reason).toContain("first.example");
     expect(outcome.reason).toContain("book.epub");
-    // Every attempt restarts from zero and leaves a truncated file, so the
-    // cleanup count is the attempt count. Asserted against the constant:
-    // the point is that each attempt cleans up, not that there are six.
-    expect(rm).toHaveBeenCalledTimes(DOWNLOAD_ATTEMPT_COUNT);
-    expect(rm).toHaveBeenCalledWith(path.join(OUTPUT_DIRECTORY, "book.epub"), { force: true });
+    // Deleted once, at the end - not once per attempt. The part file is what
+    // the next attempt would resume from, so removing it between tries would
+    // throw away the only thing worth keeping. It never carries the real name,
+    // so a caller cannot mistake it for a finished download in the meantime.
+    expect(rm).toHaveBeenCalledTimes(1);
+    expect(rm).toHaveBeenCalledWith(path.join(OUTPUT_DIRECTORY, "book.epub.part"), { force: true });
   });
 
   it("moves to another mirror when one resolves but cannot serve the file", async () => {
@@ -285,6 +288,7 @@ describe("downloadByMD5", () => {
         }) as fs.WriteStream
     );
     spyOn(fs.promises, "rm").mockImplementation(async () => {});
+    stubPartFileRename();
     const retryMessages: string[] = [];
 
     const outcome = await downloadByMD5({
@@ -331,6 +335,178 @@ describe("downloadByMD5", () => {
     expect(outcome.reason).toContain("out of time");
     expect(fileRequestCount).toBe(1);
     expect(retryMessages).toHaveLength(0);
+  });
+
+  it("asks to continue from what the last attempt left on disk", async () => {
+    const rangeHeaders: (string | null)[] = [];
+    let fileRequestCount = 0;
+    mockFetch(async (input, init) => {
+      if (input.toString().includes("/ads.php")) {
+        return new Response(detailPage("first.example"));
+      }
+
+      fileRequestCount += 1;
+      rangeHeaders.push(new Headers(init?.headers).get("range"));
+      return fileResponse();
+    });
+    // The real failure mode: the transfer starts, writes some bytes, then the
+    // socket dies. A response-level failure (502) never reaches downloadFile,
+    // so there would be no part file to resume from at all.
+    spyOn(fs, "createWriteStream").mockImplementation(
+      () =>
+        new Writable({
+          write(_chunk, _encoding, callback) {
+            if (fileRequestCount === 1) {
+              callback(new Error("connection reset"));
+              return;
+            }
+
+            callback();
+          },
+        }) as fs.WriteStream
+    );
+    stubPartFileRename();
+    spyOn(fs.promises, "rm").mockImplementation(async () => {});
+    // Six bytes survived the first attempt.
+    const stat = spyOn(fs.promises, "stat");
+    // The real `stat` has several overloads; the download path only uses the
+    // simple one, so the mock is narrowed to it rather than satisfying all.
+    stat.mockImplementation((async (target: fs.PathLike) => {
+      if (String(target).endsWith(".part")) {
+        return { isFile: () => true, size: 6 } as fs.Stats;
+      }
+
+      throw new Error("ENOENT");
+    }) as unknown as typeof fs.promises.stat);
+
+    const outcome = await downloadByMD5({
+      md5: MD5,
+      candidates: [createCandidate("first.example")],
+      ...noopCallbacks,
+      retryDelayMs: 0,
+    });
+
+    expect(outcome.status).toBe("downloaded");
+    // Nothing to resume from before the first attempt; afterwards it asks.
+    expect(rangeHeaders[0]).toBeNull();
+    expect(rangeHeaders[1]).toBe("bytes=6-");
+  });
+
+  it("appends when the server agrees to resume, and counts the bytes already held", async () => {
+    let fileRequestCount = 0;
+    mockFetch(async (input) => {
+      if (input.toString().includes("/ads.php")) {
+        return new Response(detailPage("first.example"));
+      }
+
+      fileRequestCount += 1;
+      if (fileRequestCount === 1) {
+        return fileResponse();
+      }
+
+      // The server honours it: only the tail, with the full size in
+      // content-range rather than content-length.
+      return new Response("content", {
+        status: 206,
+        headers: {
+          "content-disposition": 'attachment; filename="book.epub"',
+          "content-length": "7",
+          "content-range": "bytes 11-17/18",
+        },
+      });
+    });
+    const flags: (string | undefined)[] = [];
+    spyOn(fs, "createWriteStream").mockImplementation((_target, options) => {
+      flags.push((options as { flags?: string } | undefined)?.flags);
+      return new Writable({
+        write(_chunk, _encoding, callback) {
+          if (fileRequestCount === 1) {
+            callback(new Error("connection reset"));
+            return;
+          }
+
+          callback();
+        },
+      }) as fs.WriteStream;
+    });
+    stubPartFileRename();
+    spyOn(fs.promises, "rm").mockImplementation(async () => {});
+    const stat = spyOn(fs.promises, "stat");
+    // The real `stat` has several overloads; the download path only uses the
+    // simple one, so the mock is narrowed to it rather than satisfying all.
+    stat.mockImplementation((async (target: fs.PathLike) => {
+      if (String(target).endsWith(".part")) {
+        return { isFile: () => true, size: 11 } as fs.Stats;
+      }
+
+      throw new Error("ENOENT");
+    }) as unknown as typeof fs.promises.stat);
+    const progress: number[][] = [];
+
+    const outcome = await downloadByMD5({
+      md5: MD5,
+      candidates: [createCandidate("first.example")],
+      outputDirectory: OUTPUT_DIRECTORY,
+      onStart: () => {},
+      onProgress: (_filename, receivedBytes, total) => progress.push([receivedBytes, total]),
+      retryDelayMs: 0,
+    });
+
+    expect(outcome.status).toBe("downloaded");
+    // Appended, not truncated - the 11 bytes already on disk are kept.
+    expect(flags.at(-1)).toBe("a");
+    // Progress continues from 11 rather than restarting at 0, and the total is
+    // the whole file from content-range, not the 7 bytes of this response.
+    expect(progress.at(-1)).toEqual([18, 18]);
+  });
+
+  it("starts over when the server ignores the range request", async () => {
+    // libgen's CDN does exactly this today: 200 and the whole file, however
+    // politely you ask. The part file must be overwritten, not appended to,
+    // or the finished file would carry a duplicated prefix.
+    let fileRequestCount = 0;
+    mockFetch(async (input) => {
+      if (input.toString().includes("/ads.php")) {
+        return new Response(detailPage("first.example"));
+      }
+
+      fileRequestCount += 1;
+      if (fileRequestCount === 1) {
+        return new Response("gateway down", { status: 502 });
+      }
+
+      return fileResponse();
+    });
+    const flags: (string | undefined)[] = [];
+    spyOn(fs, "createWriteStream").mockImplementation((_target, options) => {
+      flags.push((options as { flags?: string } | undefined)?.flags);
+      return new Writable({
+        write(_chunk, _encoding, callback) {
+          callback();
+        },
+      }) as fs.WriteStream;
+    });
+    stubPartFileRename();
+    const stat = spyOn(fs.promises, "stat");
+    // The real `stat` has several overloads; the download path only uses the
+    // simple one, so the mock is narrowed to it rather than satisfying all.
+    stat.mockImplementation((async (target: fs.PathLike) => {
+      if (String(target).endsWith(".part")) {
+        return { isFile: () => true, size: 6 } as fs.Stats;
+      }
+
+      throw new Error("ENOENT");
+    }) as unknown as typeof fs.promises.stat);
+
+    const outcome = await downloadByMD5({
+      md5: MD5,
+      candidates: [createCandidate("first.example")],
+      ...noopCallbacks,
+      retryDelayMs: 0,
+    });
+
+    expect(outcome.status).toBe("downloaded");
+    expect(flags.at(-1)).toBe("w");
   });
 
   it("widens the gap between restarts and clamps at the last step", async () => {

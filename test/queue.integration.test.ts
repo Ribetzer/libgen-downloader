@@ -12,6 +12,7 @@ import { initialConfigState } from "../src/tui/store/config";
 import { initialDownloadQueueState } from "../src/tui/store/download-queue";
 import { useBoundStore } from "../src/tui/store";
 import { getRequestURL, mockFetch } from "./support/fetch-mock";
+import { stubPartFileRename } from "./support/fs-mock";
 
 const BASE_URL = "https://libgen.example/";
 // Not a real directory, so nothing is ever treated as already downloaded.
@@ -68,6 +69,7 @@ const installNetworkFixture = () => {
 
 const installFilesystemFixture = () => {
   const downloadedChunks: Buffer[] = [];
+  stubPartFileRename();
   const createWriteStream = spyOn(fs, "createWriteStream").mockImplementation(() => {
     return new Writable({
       write(chunk: Buffer, _encoding, callback) {
@@ -138,7 +140,12 @@ describe("download queue integration", () => {
       "https://libgen.example/ads.php?md5=success",
       "https://libgen.example/files/success.epub",
     ]);
-    expect(createWriteStream).toHaveBeenCalledWith(path.join(OUTPUT_DIRECTORY, "success.epub"));
+    // Bytes go to `<name>.part` and are renamed on completion, so a partial
+    // never occupies the real name - and can be resumed rather than discarded.
+    expect(createWriteStream).toHaveBeenCalledWith(
+      path.join(OUTPUT_DIRECTORY, "success.epub.part"),
+      { flags: "w" }
+    );
     expect(Buffer.concat(downloadedChunks).toString()).toBe("downloaded content");
     expect(state.downloadProgressMap[entry.id]).toMatchObject({
       filename: "success.epub",

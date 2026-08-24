@@ -21,6 +21,14 @@ import {
 } from "../../settings";
 import { delay } from "../../utilities";
 
+/**
+ * Bytes land here while the transfer is in flight, and the file is renamed to
+ * its real name only once complete. A partial therefore never occupies the
+ * final name, so nothing downstream can mistake it for a finished download -
+ * and keeping it is what makes resuming the next attempt possible.
+ */
+export const PART_FILE_SUFFIX = ".part";
+
 interface downloadFileArguments {
   downloadStream: Response;
   outputDirectory: string;
@@ -28,11 +36,23 @@ interface downloadFileArguments {
   preferredTitle?: string;
   /** Overrides the stall watchdog, so a test need not wait a real minute. */
   stallTimeoutMs?: number;
+  /**
+   * What was already on disk when the `Range` header was sent. The response
+   * decides whether it counts: 206 means append from here, anything else means
+   * the server ignored the request and the part file is truncated.
+   */
+  resumeFromBytes?: number;
+  /** Reports the `.part` path so the caller can resume or clean it up. */
+  onPartPath?: (partPath: string) => void;
   onStart: (filename: string, total: number) => void;
   onProgress: (filename: string, receivedBytes: number, total: number) => void;
 }
 
-const removePartialFile = async (filePath: string) => {
+const removePartialFile = async (filePath: string | undefined) => {
+  if (!filePath) {
+    return;
+  }
+
   try {
     await fs.promises.rm(filePath, { force: true });
   } catch {
@@ -77,11 +97,30 @@ const resolveTargetPath = async (outputDirectory: string, fileName: string, tota
   return { targetPath: candidatePath, alreadyDownloaded: false };
 };
 
+/**
+ * `bytes 1000-4999/5000` -> 5000. The total is the only part that matters: it
+ * is how a resumed response declares the size of the whole file.
+ */
+export const readContentRangeTotal = (header: string | null): number | undefined => {
+  if (!header) {
+    return;
+  }
+
+  const match = header.match(/\/\s*(\d+)\s*$/);
+  if (!match) {
+    return;
+  }
+
+  return Number(match[1]);
+};
+
 export const downloadFile = async ({
   downloadStream,
   outputDirectory,
   preferredTitle,
   stallTimeoutMs = DOWNLOAD_STALL_TIMEOUT_MS,
+  resumeFromBytes = 0,
+  onPartPath,
   onStart,
   onProgress,
 }: downloadFileArguments): Promise<DownloadResult> => {
@@ -102,7 +141,20 @@ export const downloadFile = async ({
     preferredTitle
   );
 
-  const total = Number(downloadStream.headers.get("content-length") || 0);
+  // A resumed response describes only the slice it is sending, so the size of
+  // the whole file has to come from `content-range` instead of
+  // `content-length`. 206 is the server agreeing to the `Range` we asked for;
+  // any other status means it ignored us and is sending the file from the
+  // start, whatever it says elsewhere.
+  const contentRangeTotal = readContentRangeTotal(downloadStream.headers.get("content-range"));
+  const resumed = downloadStream.status === 206 && resumeFromBytes > 0;
+  const total = (() => {
+    if (resumed && contentRangeTotal) {
+      return contentRangeTotal;
+    }
+
+    return Number(downloadStream.headers.get("content-length") || 0);
+  })();
 
   if (!downloadStream.body) {
     throw new Error("No response body");
@@ -113,16 +165,30 @@ export const downloadFile = async ({
     filename,
     total
   );
+  const partPath = `${targetPath}${PART_FILE_SUFFIX}`;
+  if (onPartPath) {
+    onPartPath(partPath);
+  }
 
   onStart(filename, total);
 
   if (alreadyDownloaded) {
     onProgress(filename, total, total);
     await downloadStream.body.cancel();
+    await removePartialFile(partPath);
     return { path: targetPath, filename, total, skipped: true };
   }
 
-  let receivedBytes = 0;
+  // Appending only when the server actually answered 206. On a 200 the part
+  // file is overwritten, which is the browser behaviour too: ask to resume,
+  // accept being told no.
+  let receivedBytes = (() => {
+    if (resumed) {
+      return resumeFromBytes;
+    }
+
+    return 0;
+  })();
   // `fromWeb`, not `from`: `Readable.from` merely iterates the web stream, so
   // destroying it on a stall leaves the reader, and the socket, pending.
   // `fromWeb` owns the stream, and destroy propagates to it as a cancel.
@@ -154,7 +220,20 @@ export const downloadFile = async ({
 
   try {
     restartIdleWatchdog();
-    await pipeline(source, progressStream, fs.createWriteStream(targetPath));
+    // "a" continues the part file, "w" starts it over. Getting this wrong in
+    // either direction corrupts silently - appending to a full restart
+    // duplicates a prefix, truncating an accepted resume loses one.
+    const writeFlags = (() => {
+      if (resumed) {
+        return "a";
+      }
+
+      return "w";
+    })();
+    await pipeline(source, progressStream, fs.createWriteStream(partPath, { flags: writeFlags }));
+
+    // Only now does the file earn its real name.
+    await fs.promises.rename(partPath, targetPath);
 
     const downloadResult: DownloadResult = {
       path: targetPath,
@@ -165,9 +244,10 @@ export const downloadFile = async ({
 
     return downloadResult;
   } catch (error: unknown) {
-    // The file on disk is truncated at this point and would otherwise be
-    // indistinguishable from a complete download.
-    await removePartialFile(targetPath);
+    // The part file is deliberately KEPT: it is what the next attempt resumes
+    // from, and it cannot be mistaken for a finished download because it never
+    // holds the real name. `transferFile` deletes it once it stops retrying.
+    // Anything already at the target name is not ours and is left alone.
     const reason = (error as Error)?.message || "unknown error";
     throw new Error(`(${filename}) Error occurred while downloading file: ${reason}`, {
       cause: error,
@@ -221,6 +301,20 @@ interface TransferArguments {
 
 const formatMegabytes = (bytes: number): string => `${(bytes / 1_000_000).toFixed(1)} MB`;
 
+/** How much of a previous attempt survives on disk, or 0 if there is none. */
+const partFileSize = async (partPath: string | undefined): Promise<number> => {
+  if (!partPath) {
+    return 0;
+  }
+
+  const existing = await statFile(partPath);
+  if (!existing?.isFile()) {
+    return 0;
+  }
+
+  return existing.size;
+};
+
 /**
  * "reached 60.2 MB of 140.0 MB" - the transfer restarts from zero either way,
  * so this is the only place the abandoned progress is visible. A total of 0
@@ -254,15 +348,28 @@ const transferFile = async ({
   onRetry,
 }: TransferArguments): Promise<TransferOutcome> => {
   let lastError = "unknown error";
+  // Learned from the first attempt, then reused to resume the later ones.
+  let partPath: string | undefined;
 
   for (let index = 0; index < DOWNLOAD_ATTEMPT_COUNT; index++) {
     let waitMs = backoffMs[Math.min(index, backoffMs.length - 1)];
-    // Each attempt starts over, so this is per-attempt, not cumulative.
     let attemptBytes = 0;
     let attemptTotal = 0;
 
     try {
-      const downloadStream = await fetch(downloadURL);
+      // Ask to continue where the last attempt stopped. Whether that happens
+      // is the server's call - a 206 resumes, anything else restarts - which
+      // is exactly what a browser's "retry" does. Measured against libgen's
+      // CDN this currently comes back 200, i.e. no resume; the request costs
+      // one header, and the moment any mirror or node does support it the
+      // saving is the whole partial file.
+      const resumeFromBytes = await partFileSize(partPath);
+      const headers: Record<string, string> = {};
+      if (resumeFromBytes > 0) {
+        headers.Range = `bytes=${resumeFromBytes}-`;
+      }
+
+      const downloadStream = await fetch(downloadURL, { headers });
 
       if (!downloadStream.ok) {
         if (THROTTLE_STATUS_CODES.has(downloadStream.status)) {
@@ -280,6 +387,10 @@ const transferFile = async ({
         downloadStream,
         outputDirectory,
         preferredTitle,
+        resumeFromBytes,
+        onPartPath: (resolvedPartPath) => {
+          partPath = resolvedPartPath;
+        },
         onStart,
         onProgress: (filename, receivedBytes, total) => {
           attemptBytes = receivedBytes;
@@ -314,6 +425,11 @@ const transferFile = async ({
       await delay(waitMs);
     }
   }
+
+  // Out of attempts on this mirror. The part file only had value as something
+  // to resume from; leaving it behind would litter the output directory with
+  // half-files that nothing will ever finish.
+  await removePartialFile(partPath);
 
   return { status: "failed", reason: lastError };
 };

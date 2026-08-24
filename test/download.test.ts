@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Writable } from "node:stream";
+import { stubPartFileRename } from "./support/fs-mock";
 import { downloadFile } from "../src/api/data/download";
 
 // A directory that does not exist, so the "already downloaded" check always
@@ -43,6 +44,7 @@ describe("downloadFile", () => {
       },
     });
     spyOn(fs, "createWriteStream").mockReturnValue(destination as fs.WriteStream);
+    stubPartFileRename();
 
     const body = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -79,6 +81,7 @@ describe("downloadFile", () => {
       },
     });
     spyOn(fs, "createWriteStream").mockReturnValue(destination as fs.WriteStream);
+    stubPartFileRename();
 
     const onStart = mock(() => {});
     const receivedByteCounts: number[] = [];
@@ -144,6 +147,7 @@ describe("downloadFile", () => {
     const createWriteStream = spyOn(fs, "createWriteStream").mockReturnValue(
       destination as fs.WriteStream
     );
+    stubPartFileRename();
     const stat = spyOn(fs.promises, "stat");
     stat.mockResolvedValueOnce({ isFile: () => true, size: 999 } as fs.Stats);
     stat.mockRejectedValue(new Error("ENOENT"));
@@ -160,7 +164,10 @@ describe("downloadFile", () => {
 
     expect(result.skipped).toBe(false);
     expect(result.path).toBe(path.join(OUTPUT_DIRECTORY, "example (2).epub"));
-    expect(createWriteStream).toHaveBeenCalledWith(path.join(OUTPUT_DIRECTORY, "example (2).epub"));
+    expect(createWriteStream).toHaveBeenCalledWith(
+      path.join(OUTPUT_DIRECTORY, "example (2).epub.part"),
+      { flags: "w" }
+    );
   });
 
   it("handles a destroyed destination without writing to it again", async () => {
@@ -173,6 +180,7 @@ describe("downloadFile", () => {
       },
     });
     spyOn(fs, "createWriteStream").mockReturnValue(destination as fs.WriteStream);
+    stubPartFileRename();
 
     let cancelled = false;
     let pullCount = 0;

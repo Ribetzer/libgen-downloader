@@ -8,6 +8,7 @@ import { MirrorService } from "../src/server/mirror-service";
 import { QueueService } from "../src/server/queue-service";
 import { StorageService } from "../src/server/storage-service";
 import { mockFetch } from "./support/fetch-mock";
+import { stubPartFileRename } from "./support/fs-mock";
 
 const MD5 = "b7abef3d085a1007a137a247dcff8dcb";
 const OUTPUT_DIRECTORY = path.join(os.tmpdir(), "libgen-downloader-queue-test");
@@ -88,6 +89,7 @@ beforeEach(() => {
   // otherwise leave a marker behind that silently flips the next run's
   // storage checks from "unplugged" to "ready".
   fs.rmSync(path.join(OUTPUT_DIRECTORY, MARKER), { force: true });
+  stubPartFileRename();
   spyOn(fs, "createWriteStream").mockImplementation(
     () =>
       new Writable({

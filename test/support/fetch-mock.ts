@@ -1,6 +1,8 @@
 import { spyOn } from "bun:test";
 
-type FetchHandler = (input: RequestInfo | URL) => Promise<Response>;
+// `init` is forwarded so a handler can assert on request headers - the
+// resume tests check for `Range`, which is invisible without it.
+type FetchHandler = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 /**
  * Replaces global fetch with a handler and records every requested URL.
@@ -11,9 +13,9 @@ export const mockFetch = (handler: FetchHandler) => {
 
   const fetchMock = spyOn(globalThis, "fetch").mockImplementation(
     Object.assign(
-      async (input: RequestInfo | URL) => {
+      async (input: RequestInfo | URL, init?: RequestInit) => {
         requestedURLs.push(getRequestURL(input));
-        return handler(input);
+        return handler(input, init);
       },
       { preconnect() {} }
     )
