@@ -5,7 +5,7 @@ import path from "node:path";
 import { Writable } from "node:stream";
 import { LibgenPlusAdapter } from "../src/api/adapters/libgen-plus-adapter";
 import { downloadByMD5, readRetryAfterMs } from "../src/api/data/download";
-import { MAX_RETRY_AFTER_MS } from "../src/settings";
+import { DOWNLOAD_ATTEMPT_COUNT, MAX_RETRY_AFTER_MS } from "../src/settings";
 import type { MirrorCandidate } from "../src/api/data/resolve";
 import { mockFetch } from "./support/fetch-mock";
 
@@ -170,7 +170,10 @@ describe("downloadByMD5", () => {
     }
     expect(outcome.reason).toContain("first.example");
     expect(outcome.reason).toContain("book.epub");
-    expect(rm).toHaveBeenCalledTimes(3);
+    // Every attempt restarts from zero and leaves a truncated file, so the
+    // cleanup count is the attempt count. Asserted against the constant:
+    // the point is that each attempt cleans up, not that there are six.
+    expect(rm).toHaveBeenCalledTimes(DOWNLOAD_ATTEMPT_COUNT);
     expect(rm).toHaveBeenCalledWith(path.join(OUTPUT_DIRECTORY, "book.epub"), { force: true });
   });
 
@@ -218,5 +221,149 @@ describe("downloadByMD5", () => {
       status: "failed",
       reason: "not found on any mirror (first.example, second.example)",
     });
+  });
+
+  it("keeps restarting past the old three-attempt limit", async () => {
+    // The case this whole change exists for: a link that drops repeatedly but
+    // is not dead. Five failures then a success would have been given up on
+    // under the previous count of 3.
+    let fileRequestCount = 0;
+    mockFetch(async (input) => {
+      if (input.toString().includes("/ads.php")) {
+        return new Response(detailPage("first.example"));
+      }
+
+      fileRequestCount += 1;
+      if (fileRequestCount < 6) {
+        return new Response("gateway down", { status: 502 });
+      }
+
+      return fileResponse();
+    });
+    const chunks = collectWrites();
+
+    const outcome = await downloadByMD5({
+      md5: MD5,
+      candidates: [createCandidate("first.example")],
+      ...noopCallbacks,
+      retryDelayMs: 0,
+    });
+
+    expect(outcome.status).toBe("downloaded");
+    expect(fileRequestCount).toBe(6);
+    expect(Buffer.concat(chunks).toString()).toBe("downloaded content");
+  });
+
+  it("reports how far the failed attempt got", async () => {
+    // A transfer that moved 12 of 18 bytes and one that never started read
+    // identically before this; the bytes are the only trace left, since the
+    // partial file is deleted and the next attempt restarts from zero.
+    let fileRequestCount = 0;
+    mockFetch(async (input) => {
+      if (input.toString().includes("/ads.php")) {
+        return new Response(detailPage("first.example"));
+      }
+
+      fileRequestCount += 1;
+      return fileResponse();
+    });
+
+    let written = 0;
+    spyOn(fs, "createWriteStream").mockImplementation(
+      () =>
+        new Writable({
+          write(chunk: Buffer, _encoding, callback) {
+            written += chunk.length;
+            // Fail the first attempt partway, then let the second through.
+            if (fileRequestCount === 1) {
+              callback(new Error("connection reset"));
+              return;
+            }
+
+            callback();
+          },
+        }) as fs.WriteStream
+    );
+    spyOn(fs.promises, "rm").mockImplementation(async () => {});
+    const retryMessages: string[] = [];
+
+    const outcome = await downloadByMD5({
+      md5: MD5,
+      candidates: [createCandidate("first.example")],
+      ...noopCallbacks,
+      onRetry: (message) => retryMessages.push(message),
+      retryDelayMs: 0,
+    });
+
+    expect(outcome.status).toBe("downloaded");
+    expect(written).toBeGreaterThan(0);
+    expect(retryMessages[0]).toContain("reached");
+    expect(retryMessages[0]).toContain("of 0.0 MB");
+  });
+
+  it("stops starting attempts once the time budget is spent", async () => {
+    // Attempt counts bound tries, not time. Budget of 0 means the very first
+    // failure is the last: nothing should be retried after it.
+    let fileRequestCount = 0;
+    mockFetch(async (input) => {
+      if (input.toString().includes("/ads.php")) {
+        return new Response(detailPage("first.example"));
+      }
+
+      fileRequestCount += 1;
+      return new Response("gateway down", { status: 502 });
+    });
+    const retryMessages: string[] = [];
+
+    const outcome = await downloadByMD5({
+      md5: MD5,
+      candidates: [createCandidate("first.example"), createCandidate("second.example")],
+      ...noopCallbacks,
+      onRetry: (message) => retryMessages.push(message),
+      retryDelayMs: 0,
+      totalBudgetMs: 0,
+    });
+
+    expect(outcome.status).toBe("failed");
+    if (outcome.status !== "failed") {
+      throw new Error("Expected the transfer to fail");
+    }
+    expect(outcome.reason).toContain("out of time");
+    expect(fileRequestCount).toBe(1);
+    expect(retryMessages).toHaveLength(0);
+  });
+
+  it("widens the gap between restarts and clamps at the last step", async () => {
+    // The message rounds to whole seconds, so asserting through it would mean
+    // really waiting seconds. `delay` is stubbed instead: the gaps are
+    // recorded and nothing sleeps.
+    const utilities = await import("../src/utilities");
+    const waits: number[] = [];
+    mock.module("../src/utilities", () => ({
+      ...utilities,
+      delay: async (ms: number) => {
+        waits.push(ms);
+      },
+    }));
+
+    mockFetch(async (input) => {
+      if (input.toString().includes("/ads.php")) {
+        return new Response(detailPage("first.example"));
+      }
+
+      return new Response("gateway down", { status: 502 });
+    });
+
+    const outcome = await downloadByMD5({
+      md5: MD5,
+      candidates: [createCandidate("first.example")],
+      ...noopCallbacks,
+      backoffMs: [1000, 2000, 4000],
+      totalBudgetMs: 10 * 60_000,
+    });
+
+    expect(outcome.status).toBe("failed");
+    // Five gaps for six attempts, rising then holding at the final entry.
+    expect(waits).toEqual([1000, 2000, 4000, 4000, 4000]);
   });
 });

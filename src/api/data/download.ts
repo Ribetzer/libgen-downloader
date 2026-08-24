@@ -10,8 +10,9 @@ import { buildDownloadFileName, MAX_FILE_NAME_LENGTH, withCollisionSuffix } from
 import { MirrorCandidate, resolveDownloadURL, ResolveResult } from "./resolve";
 import {
   DOWNLOAD_ATTEMPT_COUNT,
-  DOWNLOAD_RETRY_DELAY_MS,
+  DOWNLOAD_BACKOFF_MS,
   DOWNLOAD_STALL_TIMEOUT_MS,
+  DOWNLOAD_TOTAL_BUDGET_MS,
   MAX_DOWNLOAD_MIRRORS,
   MAX_PATH_LENGTH,
   MAX_RETRY_AFTER_MS,
@@ -204,12 +205,38 @@ interface TransferArguments {
   downloadURL: string;
   outputDirectory: string;
   preferredTitle?: string;
-  retryDelayMs: number;
   throttleBackoffMs: number[];
+  /**
+   * Spacing between restarts, indexed by attempt and clamped at the last
+   * entry. A caller wanting one flat delay passes a single-element array;
+   * that is how `retryDelayMs` is honoured, and how the tests stay fast.
+   */
+  backoffMs: number[];
+  /** Absolute time after which no further attempt is started. */
+  deadline?: number;
   onStart: (filename: string, total: number) => void;
   onProgress: (filename: string, receivedBytes: number, total: number) => void;
   onRetry?: (message: string) => void;
 }
+
+const formatMegabytes = (bytes: number): string => `${(bytes / 1_000_000).toFixed(1)} MB`;
+
+/**
+ * "reached 60.2 MB of 140.0 MB" - the transfer restarts from zero either way,
+ * so this is the only place the abandoned progress is visible. A total of 0
+ * means the server never declared one, so only the received count is known.
+ */
+const describeProgress = (receivedBytes: number, total: number): string => {
+  if (receivedBytes <= 0) {
+    return "no data received";
+  }
+
+  if (total > 0) {
+    return `reached ${formatMegabytes(receivedBytes)} of ${formatMegabytes(total)}`;
+  }
+
+  return `reached ${formatMegabytes(receivedBytes)}`;
+};
 
 type TransferOutcome =
   | { status: "downloaded"; result: DownloadResult }
@@ -219,8 +246,9 @@ const transferFile = async ({
   downloadURL,
   outputDirectory,
   preferredTitle,
-  retryDelayMs,
   throttleBackoffMs,
+  backoffMs,
+  deadline,
   onStart,
   onProgress,
   onRetry,
@@ -228,17 +256,20 @@ const transferFile = async ({
   let lastError = "unknown error";
 
   for (let index = 0; index < DOWNLOAD_ATTEMPT_COUNT; index++) {
-    let waitMs = retryDelayMs;
+    let waitMs = backoffMs[Math.min(index, backoffMs.length - 1)];
+    // Each attempt starts over, so this is per-attempt, not cumulative.
+    let attemptBytes = 0;
+    let attemptTotal = 0;
 
     try {
       const downloadStream = await fetch(downloadURL);
 
       if (!downloadStream.ok) {
         if (THROTTLE_STATUS_CODES.has(downloadStream.status)) {
-          const backoffMs =
+          const throttleWaitMs =
             readRetryAfterMs(downloadStream.headers.get("retry-after")) ??
             throttleBackoffMs[Math.min(index, throttleBackoffMs.length - 1)];
-          waitMs = backoffMs;
+          waitMs = throttleWaitMs;
           throw new Error(`HTTP ${downloadStream.status} (throttled)`);
         }
 
@@ -250,7 +281,11 @@ const transferFile = async ({
         outputDirectory,
         preferredTitle,
         onStart,
-        onProgress,
+        onProgress: (filename, receivedBytes, total) => {
+          attemptBytes = receivedBytes;
+          attemptTotal = total;
+          onProgress(filename, receivedBytes, total);
+        },
       });
       return { status: "downloaded", result };
     } catch (error: unknown) {
@@ -260,10 +295,19 @@ const transferFile = async ({
         break;
       }
 
+      // Attempts alone bound the number of tries, not how long they take. A
+      // large file on a slow link can spend hours here with the queue stuck
+      // behind it, so stop starting new ones once the budget is gone.
+      if (deadline !== undefined && Date.now() + waitMs >= deadline) {
+        lastError = `${lastError} (${describeProgress(attemptBytes, attemptTotal)}), gave up: out of time`;
+        break;
+      }
+
       if (onRetry) {
         const waitSeconds = Math.round(waitMs / 1000);
         onRetry(
-          `${lastError}, retrying in ${waitSeconds}s (${index + 2}/${DOWNLOAD_ATTEMPT_COUNT})`
+          `${lastError} - ${describeProgress(attemptBytes, attemptTotal)}, ` +
+            `retrying in ${waitSeconds}s (${index + 2}/${DOWNLOAD_ATTEMPT_COUNT})`
         );
       }
 
@@ -312,6 +356,9 @@ interface DownloadByMD5Arguments {
   onRetry?: (message: string) => void;
   retryDelayMs?: number;
   throttleBackoffMs?: number[];
+  backoffMs?: number[];
+  /** Wall-clock ceiling for the whole MD5, across every mirror. */
+  totalBudgetMs?: number;
 }
 
 export type DownloadByMD5Outcome =
@@ -333,14 +380,37 @@ export const downloadByMD5 = async ({
   onMirrorTry,
   onMirrorUnreachable,
   onRetry,
-  retryDelayMs = DOWNLOAD_RETRY_DELAY_MS,
+  retryDelayMs,
   throttleBackoffMs = THROTTLE_BACKOFF_MS,
+  backoffMs,
+  totalBudgetMs = DOWNLOAD_TOTAL_BUDGET_MS,
 }: DownloadByMD5Arguments): Promise<DownloadByMD5Outcome> => {
+  // One spacing source, resolved once. A caller that names a single
+  // `retryDelayMs` means it - collapsing it to a one-element array keeps that
+  // working without a second precedence rule to get wrong.
+  const effectiveBackoffMs = (() => {
+    if (backoffMs) {
+      return backoffMs;
+    }
+
+    if (retryDelayMs === undefined) {
+      return DOWNLOAD_BACKOFF_MS;
+    }
+
+    return [retryDelayMs];
+  })();
   let remainingCandidates = [...candidates];
   const failedMirrorLabels: string[] = [];
   let lastTransferError: string | undefined;
+  const deadline = Date.now() + totalBudgetMs;
 
   for (let mirrorIndex = 0; mirrorIndex < MAX_DOWNLOAD_MIRRORS; mirrorIndex++) {
+    // Checked before resolving as well as before transferring: walking a dead
+    // mirror's detail pages is not free either.
+    if (mirrorIndex > 0 && Date.now() >= deadline) {
+      break;
+    }
+
     const resolveResult = await resolveDownloadURL({
       md5,
       candidates: remainingCandidates,
@@ -360,8 +430,9 @@ export const downloadByMD5 = async ({
       downloadURL: resolveResult.downloadURL,
       outputDirectory,
       preferredTitle,
-      retryDelayMs,
       throttleBackoffMs,
+      backoffMs: effectiveBackoffMs,
+      deadline,
       onStart,
       onProgress,
       onRetry,

@@ -14,9 +14,35 @@ export const PROBE_REQ_ATTEMPT_COUNT = 2;
 
 // How many times a single file transfer is restarted on the same mirror, and
 // how many mirrors are allowed to serve transfer attempts for one MD5.
-export const DOWNLOAD_ATTEMPT_COUNT = 3;
-export const DOWNLOAD_RETRY_DELAY_MS = 2000;
-export const MAX_DOWNLOAD_MIRRORS = 2;
+//
+// These were 3 and 2 - six attempts, sized like a lookup, which either works
+// or does not. A large transfer over a shaky link is neither: a 140 MB volume
+// reached ~60 MB and died with "socket connection was closed unexpectedly",
+// and six tries were not enough to get one clean run.
+//
+// Every attempt restarts from byte zero, because libgen's `get.php` ignores
+// `Range` - measured: a ranged request answers 200 with the full
+// content-length and no `accept-ranges`. There is no resume to be had, so the
+// only lever is more chances at a complete transfer.
+//
+// The cost is honest: a 140 MB file that never succeeds can now move ~3.4 GB
+// before giving up. That is the price of not abandoning a download that got
+// 43% of the way there, and DOWNLOAD_TOTAL_BUDGET_MS bounds it in time.
+export const DOWNLOAD_ATTEMPT_COUNT = 6;
+export const MAX_DOWNLOAD_MIRRORS = 4;
+
+// Spacing between restarts on the same mirror. Flat 2s hammered a mirror that
+// was already struggling; this backs off and clamps at the last entry, the
+// same shape THROTTLE_BACKOFF_MS uses.
+export const DOWNLOAD_BACKOFF_MS = [2000, 4000, 8000, 16_000, 30_000];
+// The first entry, kept as a named default so callers (and tests) that pass a
+// single `retryDelayMs` still work.
+export const DOWNLOAD_RETRY_DELAY_MS = DOWNLOAD_BACKOFF_MS[0];
+
+// Attempt counts bound the number of tries, not the time they take: 24
+// attempts at a few minutes each is hours on a slow link, with the queue
+// blocked behind it. This is the ceiling in wall-clock terms.
+export const DOWNLOAD_TOTAL_BUDGET_MS = 45 * 60_000;
 
 // A mirror that answers 429 or 503 is asking for a slower pace, so those
 // retries wait far longer than an ordinary dropped connection.
