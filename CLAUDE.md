@@ -61,6 +61,41 @@ Plain text queries go through the HTML file search (`index.php` → `#tablelibge
 
 `db.md` and `json.md` in the repo root are LibGen's own database and API documentation, kept as reference for this layer.
 
+### Sources (`src/api/sources/`)
+
+More than one library is searched. A **source** is a library; an **adapter** is
+a mirror *of* one. `Adapter` abstracts over mirrors of the same catalogue —
+same HTML, same MD5s, same detail pages — so arXiv, which has none of those,
+implements `Source` instead.
+
+`searchSources()` asks every source whose `handles(query)` is true, in
+parallel, and merges the results in source order. A source that fails
+contributes a `SourceNote` and nothing else, so arXiv being down still returns
+LibGen's results; only when *every* source asked has failed is the search an
+error. `/api/search` returns those notes alongside the items.
+
+- `libgen` — all three query kinds. The only source with MD5s.
+- `arxiv` — text only. The API's field prefixes are ti/au/abs/co/jr/cat/rn/id/all,
+  so there is no `doi:` to search by; asking anyway returns an empty feed, which
+  would read as "arXiv has nothing".
+- `scihub` — DOI only. Distinguishes *not found* (404) from *rate limited*
+  (200 with no `citation_pdf_url`, the Altcha page) — reporting a captcha as
+  "not found" would send the caller elsewhere for a paper Sci-Hub is holding.
+
+**A result is identified by an MD5 *or* a URL.** `withIdentity` keeps a row
+with either and drops only what has neither; the `withMD5` it replaced
+discarded every arXiv and Sci-Hub row on the way to the browser. The queue
+carries both (`source`, `url` columns) and branches once in `QueueService`.
+
+Sci-Hub's page hosts sit behind DDoS-Guard's **self-signed** certificate (no
+CN, no SAN), so the request supplies that one certificate as its only trust
+anchor and waives the hostname check the certificate cannot satisfy. Both are
+required and it is a real pin, not a bypass — substituting a different
+certificate is rejected. Never `NODE_TLS_REJECT_UNAUTHORIZED`: it is global and
+would disable verification for LibGen and arXiv too. `downloadRequestInit(url)`
+applies the pin by *host*, so the `/storage/…` spelling served from the page
+host is covered while `sci-hub.red` (ordinary Let's Encrypt) is left alone.
+
 ### Adapter layer (`src/api/adapters/`)
 
 Everything mirror-specific — URL shapes, DOM selectors, connection-error detection, field formatting — sits behind the abstract `Adapter` class. `LibgenPlusAdapter` is currently the only implementation. Nothing outside this directory should know LibGen's HTML or URL structure; the rest of the app goes through `store.mirrorAdapter?.…` (optional, because config may not have loaded yet).
@@ -84,7 +119,7 @@ The result list is a rotated ring: `constructListItems()` reorders entries so th
 
 ### Downloads
 
-Both queues delegate to one routine, `downloadByMD5()` in `src/api/data/download.ts`, which owns resolve → fetch → stream, transfer retries, mirror fall-through, and deletion of truncated files. The queues only map its callbacks onto their own progress shapes:
+Both queues delegate to one routine, `downloadByMD5()` in `src/api/data/download.ts`, which owns resolve → fetch → stream, transfer retries, mirror fall-through, and deletion of truncated files. `downloadFromURL()` beside it is the same thing without the resolve step, for a source that hands over the URL itself; both go through the one private `transferFile`, so there is only ever one retry/backoff/stall/resume implementation. A response with no `content-disposition` (Sci-Hub's storage host sends none) falls back to the URL's last path segment for the extension. The queues only map its callbacks onto their own progress shapes:
 
 - **Download queue** (`download-queue.ts`): background, non-blocking, driven by `iterateQueue()` until drained; per-entry progress accumulates in `downloadProgressMap` keyed by entry id.
 - **Bulk download queue** (`bulk-download-queue.ts`): sequential, index-based status updates, records a per-item `error`/`mirror`, and writes an md5 list file of successful downloads at the end (that file is the input for `-b/--bulk`). Selected entries are deduped by `objectHash(entry)`, not by id.
@@ -124,8 +159,14 @@ optional `id`; `POST /api/history/dismiss` marks one row `cancelled` so it
 leaves the failed set **without pretending it succeeded**. `dismiss` is guarded
 to `failed` rows exactly as `cancel` is guarded to `queued` ones.
 
-`POST /api/queue` accepts `{"doi": …}` as well as `{"md5": …}`, which is how the
-paired RAG corpus re-fetches truncated papers without a human in the loop.
+`POST /api/queue` accepts `{"doi": …}` and `{"url": …}` as well as
+`{"md5": …}`, which is how the paired RAG corpus re-fetches truncated papers
+without a human in the loop. The DOI lookup now covers Sci-Hub as well as
+LibGen, so a paper LibGen never held is still reachable by DOI alone. Retry
+carries `source` and `url` through — without them a retried arXiv row would
+come back as an MD5-less LibGen item and fail at once — and `failed.txt`, which
+is an MD5 list, writes URL-only rows as comments rather than as lines that
+would be rejected on the way back in.
 
 ## Conventions
 
@@ -137,3 +178,9 @@ paired RAG corpus re-fetches truncated papers without a human in the loop.
   `linebreak-style: LF` and the Windows working tree is CRLF, so a local run
   reports thousands of errors in files nobody touched; CI checks out LF and
   passes. Lint your own files with `--rule '{"linebreak-style":"off"}'`.
+- **`bun run format` has the same trap, and it writes.** Prettier's
+  `endOfLine: lf` rewrites every CRLF file in the tree, so one run turns ~80
+  untouched files into working-tree modifications (git normalises on commit, so
+  `git diff` shows nothing for them — which makes the mess easy to "clean up"
+  destructively). `format:check` fails locally for the same reason and passes in
+  CI. Run prettier on your own files by path instead of the whole project.

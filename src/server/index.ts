@@ -3,7 +3,7 @@ import path from "node:path";
 import { parseMD5List } from "../api/data/file";
 import { extractMD5 } from "../api/data/md5";
 import { CorpusService } from "./corpus-service";
-import { ItemStore, QueueItem } from "./database";
+import { ItemStore, NewQueueItem, QueueItem } from "./database";
 import { MirrorService } from "./mirror-service";
 import { QueueService } from "./queue-service";
 import { runSearch } from "./search-service";
@@ -53,6 +53,12 @@ const notifyFinished = (item: QueueItem) => {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       md5: item.md5,
+      // Which library it came from, and by what identifier. An indexer
+      // downstream has to be able to tell an arXiv preprint from a LibGen scan
+      // of the published version, and the DOI is what it files either under.
+      source: item.source,
+      url: item.url,
+      doi: item.doi,
       title: item.title,
       status: item.status,
       filename: item.filename,
@@ -193,24 +199,44 @@ interface QueueRequestItem {
   md5?: string;
   doi?: string;
   title?: string;
+  /** A direct URL, for a result that came from a source with no MD5. */
+  url?: string;
+  source?: string;
 }
 
 /**
  * A DOI names a work, not a file, so it has to be looked up before it can be
  * queued. Doing it here saves every caller a search-then-queue round trip, and
  * a DOI is the identifier other tools actually hold.
+ *
+ * The lookup now covers Sci-Hub as well as LibGen, so a paper LibGen has never
+ * held can still be fetched by DOI alone - which is the whole point of the
+ * `{"doi": …}` body for the paired RAG corpus.
  */
 const resolveRequestedItem = async (
   item: QueueRequestItem
-): Promise<{ md5: string; title: string; doi: string } | { reason: string }> => {
+): Promise<NewQueueItem | { reason: string }> => {
   const requestedDOI = (item.doi || "").trim();
+  const requestedURL = (item.url || "").trim();
+
+  // A URL is already a location: nothing to look up.
+  if (requestedURL) {
+    return {
+      url: requestedURL,
+      title: item.title || "",
+      doi: requestedDOI,
+      source: item.source || "",
+      md5: extractMD5(item.md5 || ""),
+    };
+  }
+
   const md5 = extractMD5(item.md5 || "");
   if (md5) {
-    return { md5, title: item.title || "", doi: requestedDOI };
+    return { md5, title: item.title || "", doi: requestedDOI, source: item.source || "libgen" };
   }
 
   if (!requestedDOI) {
-    return { reason: "no usable md5 or doi" };
+    return { reason: "no usable md5, url or doi" };
   }
 
   const outcome = await runSearch(mirrors, requestedDOI, 1);
@@ -218,18 +244,21 @@ const resolveRequestedItem = async (
     return { reason: outcome.message };
   }
 
-  // A DOI can name several files - different scans of the same book, say.
-  // The first is what the mirror ranks highest.
+  // A DOI can name several files - different scans of the same book, say -
+  // and now several libraries too. The first is LibGen's best match when it
+  // has one, and Sci-Hub's copy when it does not.
   const [first] = outcome.items;
   if (!first) {
-    return { reason: `no file on any mirror for ${requestedDOI}` };
+    return { reason: `no file on any source for ${requestedDOI}` };
   }
 
-  // The mirror's own record often knows the DOI even when the caller queued by
+  // The source's own record often knows the DOI even when the caller queued by
   // MD5, so take it from there rather than lose it.
   return {
     md5: first.md5,
-    title: item.title || first.title || "",
+    url: first.downloadURL,
+    source: first.source,
+    title: item.title || first.articleTitle || first.title || "",
     doi: requestedDOI || first.doi || "",
   };
 };
@@ -260,14 +289,14 @@ const handleQueuePost = async (request: Request): Promise<Response> => {
   const body = (await request.json()) as { items?: QueueRequestItem[] };
   const requested = body.items || [];
 
-  const accepted: { md5: string; title: string; doi: string }[] = [];
+  const accepted: NewQueueItem[] = [];
   const rejected: { input: string; reason: string }[] = [];
 
   for (const item of requested) {
     const resolved = await resolveRequestedItem(item);
 
     if ("reason" in resolved) {
-      rejected.push({ input: item.md5 || item.doi || "", reason: resolved.reason });
+      rejected.push({ input: item.md5 || item.doi || item.url || "", reason: resolved.reason });
       continue;
     }
 
@@ -282,13 +311,22 @@ const handleMD5ListPost = async (request: Request): Promise<Response> => {
   const contents = await request.text();
   const { md5List, invalidLines } = parseMD5List(contents);
 
-  const added = queue.addMany(md5List.map((md5) => ({ md5 })));
+  const added = queue.addMany(md5List.map((md5) => ({ md5, source: "libgen" })));
   return json({ added, invalidLines });
 };
 
 const buildFailureList = (): string => {
   const lines = ["# failed downloads, re-upload this file to retry them"];
   for (const item of store.listFailed()) {
+    // This file is an MD5 list, and re-uploading it is how it gets retried. A
+    // row without an MD5 cannot be expressed here, so it is written as a
+    // comment rather than as a line that would come back in as unreadable; the
+    // per-row Retry button is what retries those.
+    if (!item.md5) {
+      lines.push(`# ${item.source}: ${item.url || item.doi} - ${item.error || "unknown error"}`);
+      continue;
+    }
+
     lines.push(`${item.md5}\t${item.error || "unknown error"}`);
   }
 
@@ -340,7 +378,10 @@ const handleRequest = async (request: Request): Promise<Response> => {
       return json({ error: outcome.message }, 502);
     }
 
-    return json({ kind: outcome.kind, items: outcome.items });
+    // `notes` carries the sources that failed while others answered. Dropping
+    // it here would leave the browser unable to say why arXiv is missing from
+    // a result list that otherwise looks complete.
+    return json({ kind: outcome.kind, items: outcome.items, notes: outcome.notes });
   }
 
   if (pathname === "/api/queue") {
@@ -388,13 +429,29 @@ const handleRequest = async (request: Request): Promise<Response> => {
         return json({ error: "No failed item with that id" }, 404);
       }
 
-      const added = queue.addMany([{ md5: item.md5, title: item.title, doi: item.doi }]);
+      const added = queue.addMany([
+        {
+          md5: item.md5,
+          title: item.title,
+          doi: item.doi,
+          // Without these a retried arXiv or Sci-Hub row would come back as an
+          // MD5-less LibGen item and fail immediately.
+          source: item.source,
+          url: item.url,
+        },
+      ]);
       return json({ added });
     }
 
     const failed = store.listFailed();
     const added = queue.addMany(
-      failed.map((item) => ({ md5: item.md5, title: item.title, doi: item.doi }))
+      failed.map((item) => ({
+        md5: item.md5,
+        title: item.title,
+        doi: item.doi,
+        source: item.source,
+        url: item.url,
+      }))
     );
     return json({ added });
   }

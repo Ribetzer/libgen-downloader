@@ -1,6 +1,8 @@
-import { downloadByMD5 } from "../api/data/download";
+import { downloadByMD5, downloadFromURL } from "../api/data/download";
+import type { DownloadResult } from "../api/models/download-result";
+import { downloadRequestInit } from "../api/sources";
 import { QUEUE_RETRY_MS } from "../settings";
-import { ItemStore, QueueItem } from "./database";
+import { ItemStore, NewQueueItem, QueueItem } from "./database";
 import { MirrorService } from "./mirror-service";
 import { StorageService } from "./storage-service";
 
@@ -104,15 +106,15 @@ export class QueueService {
     this.publish(id, "item-updated");
   }
 
-  add(md5: string, title = "", doi = ""): QueueItem {
-    const item = this.store.add(md5, title, doi);
+  add(entry: NewQueueItem): QueueItem {
+    const item = this.store.add(entry);
     this.emit({ type: "item-added", item });
     this.start();
     return item;
   }
 
-  addMany(entries: { md5: string; title?: string; doi?: string }[]): QueueItem[] {
-    return entries.map((entry) => this.add(entry.md5, entry.title || "", entry.doi || ""));
+  addMany(entries: NewQueueItem[]): QueueItem[] {
+    return entries.map((entry) => this.add(entry));
   }
 
   cancel(id: number): boolean {
@@ -151,7 +153,10 @@ export class QueueService {
       // With no mirror there is nothing to try, and failing every item for a
       // VPN that is still connecting would be wrong. Leave the queue as it is
       // and come back to it.
-      if (this.mirrors.getCandidates().length === 0) {
+      //
+      // Only for an item that actually needs a mirror: an arXiv or Sci-Hub row
+      // carries its own URL and has no reason to wait on LibGen being up.
+      if (!item.url && this.mirrors.getCandidates().length === 0) {
         this.scheduleRetry();
         return;
       }
@@ -193,29 +198,56 @@ export class QueueService {
   private async process(item: QueueItem): Promise<void> {
     this.change(item.id, { status: "resolving", error: "", progress: 0 });
 
-    const outcome = await downloadByMD5({
-      md5: item.md5,
-      candidates: this.mirrors.getCandidates(),
+    // The callbacks are the same whichever route the file takes; only the way
+    // its location is worked out differs.
+    const shared = {
       outputDirectory: this.outputDirectory,
       // Whoever queued this usually knows the real title - a DOI lookup
       // certainly does - and libgen's own filename often does not.
       preferredTitle: item.title,
-      // Written into the filename when libgen's own name carries no DOI, which
-      // is how the identifier reaches the RAG: `paper_id` decodes
-      // `[10.1007_978-3-030-31154-4]` straight out of the name.
+      // Written into the filename when the source's own name carries no DOI,
+      // which is how the identifier reaches the RAG: `paper_id` decodes
+      // `[10.1007_978-3-030-31154-4]` straight out of the name. It matters
+      // most for Sci-Hub, where the DOI is how the file was found at all.
       preferredDOI: item.doi,
-      onStart: (filename, total) => {
+      onStart: (filename: string, total: number) => {
         this.change(item.id, { status: "downloading", filename, total, progress: 0 });
       },
-      onProgress: (filename, receivedBytes, total) => {
+      onProgress: (filename: string, receivedBytes: number, total: number) => {
         this.change(item.id, { filename, progress: receivedBytes, total });
       },
+      onRetry: (message: string) => {
+        this.change(item.id, { status: "retrying", error: message, progress: 0 });
+      },
+    };
+
+    // A URL is a location, an MD5 is a record to look one up for. Which of the
+    // two an item carries is decided by the source it came from.
+    if (item.url) {
+      const outcome = await downloadFromURL({
+        downloadURL: item.url,
+        // Whatever the host needs to be fetched at all - the Sci-Hub pin, for
+        // a PDF served from the page host rather than the storage one.
+        requestInit: downloadRequestInit(item.url),
+        ...shared,
+      });
+
+      if (outcome.status === "failed") {
+        this.change(item.id, { status: "failed", error: outcome.reason });
+        return;
+      }
+
+      this.finish(item.id, outcome.result, item.source);
+      return;
+    }
+
+    const outcome = await downloadByMD5({
+      md5: item.md5,
+      candidates: this.mirrors.getCandidates(),
       onMirrorUnreachable: (mirrorSource) => {
         this.mirrors.markUnreachable(mirrorSource);
       },
-      onRetry: (message) => {
-        this.change(item.id, { status: "retrying", error: message, progress: 0 });
-      },
+      ...shared,
     });
 
     if (outcome.status === "failed") {
@@ -224,19 +256,23 @@ export class QueueService {
     }
 
     this.mirrors.notePreferred(outcome.mirror.src);
+    this.finish(item.id, outcome.result, outcome.mirror.src);
+  }
 
+  /** Records a completed download, whichever route produced it. */
+  private finish(id: number, result: DownloadResult, mirror: string): void {
     let status: QueueItem["status"] = "downloaded";
-    if (outcome.result.skipped) {
+    if (result.skipped) {
       status = "skipped";
     }
 
-    this.change(item.id, {
+    this.change(id, {
       status,
       error: "",
-      filename: outcome.result.filename,
-      mirror: outcome.mirror.src,
-      total: outcome.result.total,
-      progress: outcome.result.total,
+      filename: result.filename,
+      mirror,
+      total: result.total,
+      progress: result.total,
     });
   }
 }

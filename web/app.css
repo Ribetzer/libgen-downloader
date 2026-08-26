@@ -221,6 +221,55 @@ tbody tr.owned .title > div:first-child {
   vertical-align: middle;
 }
 
+/* Which library a row came from. Same pill as .chip-owned, so a glance down
+   the column separates the sources without reading them. */
+.chip-source {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  vertical-align: middle;
+  border: 1px solid currentColor;
+  color: var(--muted);
+}
+
+.chip-source.arxiv {
+  color: var(--amber);
+}
+
+.chip-source.scihub {
+  color: var(--cyan);
+}
+
+/* In the queue and history the badge sits before the filename, not in its own
+   column. */
+td .chip-source {
+  margin-right: 8px;
+}
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* The source currently isolated. */
+.small.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* A library that failed while the others answered - informational, not the
+   red of a failed search. */
+.hint.note {
+  color: var(--amber);
+  margin-top: 4px;
+}
+
 .chip.queued {
   color: var(--muted);
 }

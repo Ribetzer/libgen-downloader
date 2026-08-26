@@ -12,10 +12,31 @@ export type ItemStatus =
 
 export const TERMINAL_STATUSES: ItemStatus[] = ["downloaded", "skipped", "failed", "cancelled"];
 
+/** What a caller has to know to queue something. Everything else is filled in. */
+export interface NewQueueItem {
+  md5?: string;
+  title?: string;
+  doi?: string;
+  source?: string;
+  url?: string;
+}
+
 export interface QueueItem {
   id: number;
+  /**
+   * LibGen's identifier. Empty for a source that has none - arXiv and Sci-Hub
+   * both name a file by URL instead, and `url` below carries it.
+   */
   md5: string;
   title: string;
+  /** Which library this came from; "libgen" for anything queued before sources existed. */
+  source: string;
+  /**
+   * A direct download URL, when the source gave one. An item needs either this
+   * or an `md5`: the first is fetched as-is, the second is resolved against
+   * whichever mirror answers.
+   */
+  url: string;
   /**
    * The DOI this item was queued by, when it was. Kept because it is the only
    * unique identifier in the whole pipeline: the RAG's `paper_id` decodes
@@ -38,6 +59,8 @@ interface ItemRow {
   id: number;
   md5: string;
   title: string | null;
+  source: string | null;
+  url: string | null;
   doi: string | null;
   status: string;
   filename: string | null;
@@ -53,6 +76,9 @@ const toQueueItem = (row: ItemRow): QueueItem => ({
   id: row.id,
   md5: row.md5,
   title: row.title || "",
+  // Rows written before there was more than one library are LibGen's.
+  source: row.source || "libgen",
+  url: row.url || "",
   doi: row.doi || "",
   status: row.status as ItemStatus,
   filename: row.filename || "",
@@ -90,13 +116,15 @@ export class ItemStore {
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       )
     `);
-    // Added after the table existed, so an older database gets it here rather
-    // than through a fresh CREATE. Duplicate-column is the expected outcome on
-    // every run after the first.
-    try {
-      this.database.run("ALTER TABLE items ADD COLUMN doi TEXT");
-    } catch {
-      // already applied
+    // Added after the table existed, so an older database gets them here
+    // rather than through a fresh CREATE. Duplicate-column is the expected
+    // outcome on every run after the first.
+    for (const column of ["doi TEXT", "source TEXT", "url TEXT"]) {
+      try {
+        this.database.run(`ALTER TABLE items ADD COLUMN ${column}`);
+      } catch {
+        // already applied
+      }
     }
     this.database.run("CREATE INDEX IF NOT EXISTS items_status ON items (status)");
   }
@@ -116,13 +144,19 @@ export class ItemStore {
     return result.changes;
   }
 
-  add(md5: string, title: string, doi = ""): QueueItem {
+  add(entry: NewQueueItem): QueueItem {
     const row = this.database
-      .query<
-        ItemRow,
-        [string, string, string]
-      >("INSERT INTO items (md5, title, doi, status) VALUES (?, ?, ?, 'queued') RETURNING *")
-      .get(md5, title, doi);
+      .query<ItemRow, [string, string, string, string, string]>(
+        `INSERT INTO items (md5, title, source, url, doi, status)
+         VALUES (?, ?, ?, ?, ?, 'queued') RETURNING *`
+      )
+      .get(
+        entry.md5 || "",
+        entry.title || "",
+        entry.source || "libgen",
+        entry.url || "",
+        entry.doi || ""
+      );
 
     return toQueueItem(row as ItemRow);
   }

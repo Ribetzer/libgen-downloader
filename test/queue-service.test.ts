@@ -110,7 +110,7 @@ afterEach(() => {
 
 describe("ItemStore", () => {
   it("requeues work that a restart interrupted", () => {
-    const item = store.add(MD5, "Interrupted");
+    const item = store.add({ md5: MD5, title: "Interrupted" });
     store.update(item.id, { status: "downloading", progress: 500 });
 
     const recovered = store.recoverInterrupted();
@@ -120,8 +120,8 @@ describe("ItemStore", () => {
   });
 
   it("separates the queue from the history by status", () => {
-    const queued = store.add(MD5, "Waiting");
-    const done = store.add("108804c7a0e8c28c31071f2c34269570", "Done");
+    const queued = store.add({ md5: MD5, title: "Waiting" });
+    const done = store.add({ md5: "108804c7a0e8c28c31071f2c34269570", title: "Done" });
     store.update(done.id, { status: "downloaded" });
 
     expect(store.listActive().map((item) => item.id)).toEqual([queued.id]);
@@ -129,8 +129,8 @@ describe("ItemStore", () => {
   });
 
   it("only cancels an item that has not started", () => {
-    const queued = store.add(MD5, "Waiting");
-    const running = store.add(MD5, "Running");
+    const queued = store.add({ md5: MD5, title: "Waiting" });
+    const running = store.add({ md5: MD5, title: "Running" });
     store.update(running.id, { status: "downloading" });
 
     expect(store.cancel(queued.id)).toBe(true);
@@ -141,8 +141,8 @@ describe("ItemStore", () => {
     // Retrying every failure is wrong when they are not equivalent: the same
     // file queued twice leaves two rows, and a third may already have been
     // fetched by hand. Dismissing takes one out without claiming it succeeded.
-    const abandoned = store.add(MD5, "Not worth retrying");
-    const wanted = store.add("108804c7a0e8c28c31071f2c34269570", "Still wanted");
+    const abandoned = store.add({ md5: MD5, title: "Not worth retrying" });
+    const wanted = store.add({ md5: "108804c7a0e8c28c31071f2c34269570", title: "Still wanted" });
     store.update(abandoned.id, { status: "failed" });
     store.update(wanted.id, { status: "failed" });
 
@@ -152,7 +152,7 @@ describe("ItemStore", () => {
   });
 
   it("will not dismiss anything that has not failed", () => {
-    const queued = store.add(MD5, "Waiting");
+    const queued = store.add({ md5: MD5, title: "Waiting" });
 
     expect(store.dismiss(queued.id)).toBe(false);
     expect(store.get(queued.id)?.status).toBe("queued");
@@ -172,7 +172,7 @@ describe("QueueService", () => {
     const mirrors = createMirrorService();
     const queue = createQueue({ mirrors });
     const idle = waitForIdle(queue);
-    queue.add(MD5, "A paper");
+    queue.add({ md5: MD5, title: "A paper" });
     await idle;
 
     const [item] = store.listHistory(10);
@@ -198,7 +198,7 @@ describe("QueueService", () => {
 
     const queue = createQueue();
     const idle = waitForIdle(queue);
-    queue.add(MD5);
+    queue.add({ md5: MD5 });
     await idle;
 
     expect(store.listHistory(10)[0]?.filename).toBe("book.epub");
@@ -210,7 +210,7 @@ describe("QueueService", () => {
     const mirrors = createMirrorService();
     const queue = createQueue({ mirrors });
     const idle = waitForIdle(queue);
-    queue.add(MD5);
+    queue.add({ md5: MD5 });
     await idle;
 
     const [item] = store.listHistory(10);
@@ -237,7 +237,7 @@ describe("QueueService", () => {
     });
 
     const idle = waitForIdle(queue);
-    queue.add(MD5);
+    queue.add({ md5: MD5 });
     await idle;
 
     expect(statuses[0]).toBe("queued");
@@ -254,7 +254,7 @@ describe("QueueService", () => {
     const queue = createQueue({ mirrors });
 
     const idle = waitForIdle(queue);
-    const item = queue.add(MD5, "Waiting for the tunnel");
+    const item = queue.add({ md5: MD5, title: "Waiting for the tunnel" });
     await idle;
 
     expect(store.get(item.id)?.status).toBe("queued");
@@ -272,7 +272,7 @@ describe("QueueService", () => {
     });
 
     const idle = waitForIdle(queue);
-    const item = queue.add(MD5, "Waiting for the disk");
+    const item = queue.add({ md5: MD5, title: "Waiting for the disk" });
     await idle;
 
     expect(store.get(item.id)?.status).toBe("queued");
@@ -299,7 +299,7 @@ describe("QueueService", () => {
       });
 
       const idle = waitForIdle(queue);
-      queue.add(MD5, "A paper");
+      queue.add({ md5: MD5, title: "A paper" });
       await idle;
 
       expect(store.listHistory(10)[0]?.status).toBe("downloaded");
@@ -329,7 +329,7 @@ describe("QueueService", () => {
 
     try {
       const pausedIdle = waitForIdle(queue);
-      const item = queue.add(MD5, "Waiting for the disk");
+      const item = queue.add({ md5: MD5, title: "Waiting for the disk" });
       await pausedIdle;
       expect(store.get(item.id)?.status).toBe("queued");
 
@@ -360,7 +360,7 @@ describe("QueueService", () => {
     });
 
     const idle = waitForIdle(queue);
-    queue.add(MD5, "A paper");
+    queue.add({ md5: MD5, title: "A paper" });
     await idle;
 
     expect(finished).toEqual([{ md5: MD5, status: "downloaded" }]);
@@ -376,7 +376,7 @@ describe("QueueService", () => {
     });
 
     const idle = waitForIdle(queue);
-    const item = queue.add(MD5);
+    const item = queue.add({ md5: MD5 });
     await idle;
 
     // The failure is recorded rather than lost to the listener's exception.
@@ -395,7 +395,7 @@ describe("QueueService", () => {
     const mirrors = createMirrorService();
     const queue = createQueue({ mirrors });
 
-    const item: QueueItem = store.add(MD5, "Not wanted");
+    const item: QueueItem = store.add({ md5: MD5, title: "Not wanted" });
     expect(queue.cancel(item.id)).toBe(true);
 
     const idle = waitForIdle(queue);
@@ -403,5 +403,82 @@ describe("QueueService", () => {
     await idle;
 
     expect(store.get(item.id)?.status).toBe("cancelled");
+  });
+});
+
+describe("QueueService with a direct URL", () => {
+  it("fetches the URL instead of resolving an md5", async () => {
+    const fetchMock = mockFetch(async () => fileResponse());
+
+    const queue = createQueue();
+    const idle = waitForIdle(queue);
+    queue.add({
+      source: "arxiv",
+      url: "https://arxiv.org/pdf/2304.00359v1",
+      title: "A preprint",
+    });
+    await idle;
+
+    // No detail page walked: a URL is already a location.
+    expect(fetchMock.requestedURLs).toEqual(["https://arxiv.org/pdf/2304.00359v1"]);
+    const [item] = store.listHistory(10);
+    expect(item).toMatchObject({
+      status: "downloaded",
+      source: "arxiv",
+      filename: "A preprint.epub",
+      total: 18,
+    });
+  });
+
+  it("downloads even with no mirror, which it has no need of", async () => {
+    // An arXiv row has no reason to wait on LibGen being reachable - and
+    // before sources existed, the missing-mirror guard paused the whole queue
+    // for every item alike.
+    mockFetch(async () => fileResponse());
+
+    const queue = createQueue({ mirrors: new MirrorService() });
+    const idle = waitForIdle(queue);
+    const item = queue.add({ source: "arxiv", url: "https://arxiv.org/pdf/2304.00359v1" });
+    await idle;
+
+    expect(store.get(item.id)?.status).toBe("downloaded");
+  });
+
+  it("records the source rather than a mirror that never served it", async () => {
+    mockFetch(async () => fileResponse());
+
+    const queue = createQueue();
+    const idle = waitForIdle(queue);
+    const item = queue.add({ source: "scihub", url: "https://sci-hub.red/storage/a/b.pdf" });
+    await idle;
+
+    // The `mirror` column answers "where did this come from", and for a direct
+    // download the honest answer is the source, not a LibGen host.
+    expect(store.get(item.id)?.mirror).toBe("scihub");
+  });
+
+  it("writes the DOI into the filename, which keeps a Sci-Hub result identifiable", async () => {
+    mockFetch(async () => new Response("%PDF-1.4", { headers: { "content-length": "8" } }));
+
+    const queue = createQueue();
+    const idle = waitForIdle(queue);
+    const item = queue.add({
+      source: "scihub",
+      url: "https://sci-hub.red/storage/twin/6684/abc/lorensen1987.pdf",
+      title: "Marching cubes",
+      doi: "10.1145/37402.37422",
+    });
+    await idle;
+
+    expect(store.get(item.id)?.filename).toBe("Marching cubes [10.1145_37402.37422].pdf");
+  });
+
+  it("treats an item queued before sources existed as LibGen's", async () => {
+    // The `source` column was added by ALTER TABLE, so every existing row
+    // reads back NULL and must not become an unroutable item.
+    const item = store.add({ md5: MD5, title: "Queued last week" });
+
+    expect(item.source).toBe("libgen");
+    expect(item.url).toBe("");
   });
 });

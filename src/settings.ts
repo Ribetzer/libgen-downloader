@@ -79,6 +79,25 @@ export const CORPUS_TIMEOUT_MS = 5000;
 
 export const SEARCH_PAGE_SIZE = 25;
 
+// arXiv, searched alongside LibGen rather than instead of it. Fewer rows than
+// LibGen returns on purpose: the two lists are concatenated, and a preprint
+// server should add to a catalogue search, not bury it.
+export const ARXIV_API_URL = "http://export.arxiv.org/api/query";
+export const ARXIV_PAGE_SIZE = 10;
+// One request per three seconds and a User-Agent that says who is calling:
+// both are in arXiv's API terms of use. This is somebody else's free service
+// and the search runs in parallel with LibGen's, so the pacing costs nothing
+// worth having.
+export const ARXIV_MIN_INTERVAL_MS = 3000;
+export const ARXIV_USER_AGENT = "libgen-downloader (+https://github.com/obsfx/libgen-downloader)";
+
+// Sci-Hub page hosts, tried in order. Not in the remote config file because
+// that one belongs to the upstream project and describes LibGen's mirrors;
+// LIBGEN_SCIHUB_HOSTS overrides this list, so a host going dark is a compose
+// edit rather than a release. `sci-hub.se` is the standing example - it no
+// longer resolves on any resolver, which is why it is not in this list.
+export const SCIHUB_HOSTS = ["sci-hub.st", "sci-hub.ru"];
+
 // The editions tab honours `res` and `page`, so a periodical is collected a
 // page at a time with a cap that keeps a whole-journal query bounded.
 export const ISSUE_PAGE_SIZE = 100;

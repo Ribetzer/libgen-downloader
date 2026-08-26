@@ -32,6 +32,16 @@ export const PART_FILE_SUFFIX = ".part";
 interface downloadFileArguments {
   downloadStream: Response;
   outputDirectory: string;
+  /**
+   * The name to build from when the response declares none.
+   *
+   * LibGen always sends `content-disposition`; Sci-Hub's storage host sends
+   * neither that nor `content-length`, so the URL's last segment
+   * (`lorensen1987.pdf`) is all there is to start from. It only has to supply
+   * the extension - the readable part of the name comes from `preferredTitle`
+   * and `preferredDOI`.
+   */
+  fallbackFileName?: string;
   /** The caller's own title, used when libgen's filename has lost it. */
   preferredTitle?: string;
   /** The caller's own DOI, used when libgen's filename carries none. */
@@ -116,9 +126,26 @@ export const readContentRangeTotal = (header: string | null): number | undefined
   return Number(match[1]);
 };
 
+/**
+ * `…/storage/zero/6684/…/lorensen1987.pdf` -> `lorensen1987.pdf`. Only the
+ * extension really matters; a URL ending in a directory yields nothing, which
+ * the caller treats as having no name to fall back on.
+ */
+const LAST_PATH_SEGMENT_PATTERN = /([^/]+)\/*$/;
+
+export const readFileNameFromURL = (downloadURL: string): string => {
+  try {
+    const { pathname } = new URL(downloadURL);
+    return decodeURIComponent(pathname.match(LAST_PATH_SEGMENT_PATTERN)?.[1] || "");
+  } catch {
+    return "";
+  }
+};
+
 export const downloadFile = async ({
   downloadStream,
   outputDirectory,
+  fallbackFileName,
   preferredTitle,
   preferredDOI,
   stallTimeoutMs = DOWNLOAD_STALL_TIMEOUT_MS,
@@ -128,22 +155,24 @@ export const downloadFile = async ({
   onProgress,
 }: downloadFileArguments): Promise<DownloadResult> => {
   const downloadContentDisposition = downloadStream.headers.get("content-disposition");
-  if (!downloadContentDisposition) {
+  const declaredName = (() => {
+    if (downloadContentDisposition) {
+      return contentDisposition.parse(downloadContentDisposition).parameters.filename;
+    }
+
+    return fallbackFileName;
+  })();
+
+  if (!declaredName) {
     throw new Error("No content-disposition header found");
   }
 
-  const parsedContentDisposition = contentDisposition.parse(downloadContentDisposition);
   // Leave room for the directory so the whole path stays inside the limit.
   const nameBudget = Math.max(
     MIN_FILE_NAME_LENGTH,
     Math.min(MAX_FILE_NAME_LENGTH, MAX_PATH_LENGTH - outputDirectory.length)
   );
-  const filename = buildDownloadFileName(
-    parsedContentDisposition.parameters.filename,
-    nameBudget,
-    preferredTitle,
-    preferredDOI
-  );
+  const filename = buildDownloadFileName(declaredName, nameBudget, preferredTitle, preferredDOI);
 
   // A resumed response describes only the slice it is sending, so the size of
   // the whole file has to come from `content-range` instead of
@@ -288,8 +317,16 @@ export const readRetryAfterMs = (header: string | null): number | undefined => {
 interface TransferArguments {
   downloadURL: string;
   outputDirectory: string;
+  fallbackFileName?: string;
   preferredTitle?: string;
   preferredDOI?: string;
+  /** Extra request headers, for a source whose host wants one. */
+  headers?: Record<string, string>;
+  /**
+   * Extra fetch options the host requires - Sci-Hub's certificate pin is the
+   * only user. Spread under the headers, so `Range` is never displaced.
+   */
+  requestInit?: RequestInit;
   throttleBackoffMs: number[];
   /**
    * Spacing between restarts, indexed by attempt and clamped at the last
@@ -341,11 +378,32 @@ type TransferOutcome =
   | { status: "downloaded"; result: DownloadResult }
   | { status: "failed"; reason: string };
 
+/**
+ * One spacing source, resolved once. A caller that names a single
+ * `retryDelayMs` means it - collapsing it to a one-element array keeps that
+ * working without a second precedence rule to get wrong, which is how an
+ * explicit delay once ended up silently overridden by the default.
+ */
+const resolveBackoffMs = (backoffMs?: number[], retryDelayMs?: number): number[] => {
+  if (backoffMs) {
+    return backoffMs;
+  }
+
+  if (retryDelayMs === undefined) {
+    return DOWNLOAD_BACKOFF_MS;
+  }
+
+  return [retryDelayMs];
+};
+
 const transferFile = async ({
   downloadURL,
   outputDirectory,
+  fallbackFileName,
   preferredTitle,
   preferredDOI,
+  headers: extraHeaders,
+  requestInit,
   throttleBackoffMs,
   backoffMs,
   deadline,
@@ -370,12 +428,12 @@ const transferFile = async ({
       // one header, and the moment any mirror or node does support it the
       // saving is the whole partial file.
       const resumeFromBytes = await partFileSize(partPath);
-      const headers: Record<string, string> = {};
+      const headers: Record<string, string> = { ...extraHeaders };
       if (resumeFromBytes > 0) {
         headers.Range = `bytes=${resumeFromBytes}-`;
       }
 
-      const downloadStream = await fetch(downloadURL, { headers });
+      const downloadStream = await fetch(downloadURL, { ...requestInit, headers });
 
       if (!downloadStream.ok) {
         if (THROTTLE_STATUS_CODES.has(downloadStream.status)) {
@@ -392,6 +450,7 @@ const transferFile = async ({
       const result = await downloadFile({
         downloadStream,
         outputDirectory,
+        fallbackFileName,
         preferredTitle,
         preferredDOI,
         resumeFromBytes,
@@ -467,6 +526,79 @@ export const describeResolveFailure = (result: ResolveResult): string => {
   return `couldn't reach any mirror (${mirrorLabels})`;
 };
 
+interface DownloadFromURLArguments {
+  downloadURL: string;
+  outputDirectory: string;
+  preferredTitle?: string;
+  preferredDOI?: string;
+  headers?: Record<string, string>;
+  requestInit?: RequestInit;
+  onStart: (filename: string, total: number) => void;
+  onProgress: (filename: string, receivedBytes: number, total: number) => void;
+  onRetry?: (message: string) => void;
+  retryDelayMs?: number;
+  throttleBackoffMs?: number[];
+  backoffMs?: number[];
+  totalBudgetMs?: number;
+}
+
+export type DownloadFromURLOutcome =
+  | { status: "downloaded"; result: DownloadResult }
+  | { status: "failed"; reason: string };
+
+/**
+ * Downloads a file whose location is already known.
+ *
+ * `downloadByMD5` is resolve-then-transfer; this is the same routine without
+ * the resolve step, for a source that hands over the URL itself. arXiv and
+ * Sci-Hub both do, and neither has an MD5 to resolve in the first place.
+ *
+ * Everything difficult - the retries, the backoff, the wall-clock budget, the
+ * stall watchdog, `.part` files and resume - lives in `transferFile` and is
+ * reused verbatim rather than reimplemented. There is deliberately no mirror
+ * fall-through: one URL is one location, and a source that offers alternatives
+ * is expected to say so by returning more than one result.
+ */
+export const downloadFromURL = async ({
+  downloadURL,
+  outputDirectory,
+  preferredTitle,
+  preferredDOI,
+  headers,
+  requestInit,
+  onStart,
+  onProgress,
+  onRetry,
+  retryDelayMs,
+  throttleBackoffMs = THROTTLE_BACKOFF_MS,
+  backoffMs,
+  totalBudgetMs = DOWNLOAD_TOTAL_BUDGET_MS,
+}: DownloadFromURLArguments): Promise<DownloadFromURLOutcome> => {
+  const outcome = await transferFile({
+    downloadURL,
+    outputDirectory,
+    // Sci-Hub's storage host sends no content-disposition, so without this
+    // every download from it would fail on the missing header alone.
+    fallbackFileName: readFileNameFromURL(downloadURL),
+    preferredTitle,
+    preferredDOI,
+    headers,
+    requestInit,
+    throttleBackoffMs,
+    backoffMs: resolveBackoffMs(backoffMs, retryDelayMs),
+    deadline: Date.now() + totalBudgetMs,
+    onStart,
+    onProgress,
+    onRetry,
+  });
+
+  if (outcome.status === "downloaded") {
+    return { status: "downloaded", result: outcome.result };
+  }
+
+  return { status: "failed", reason: `download failed: ${outcome.reason}` };
+};
+
 interface DownloadByMD5Arguments {
   md5: string;
   candidates: MirrorCandidate[];
@@ -510,20 +642,7 @@ export const downloadByMD5 = async ({
   backoffMs,
   totalBudgetMs = DOWNLOAD_TOTAL_BUDGET_MS,
 }: DownloadByMD5Arguments): Promise<DownloadByMD5Outcome> => {
-  // One spacing source, resolved once. A caller that names a single
-  // `retryDelayMs` means it - collapsing it to a one-element array keeps that
-  // working without a second precedence rule to get wrong.
-  const effectiveBackoffMs = (() => {
-    if (backoffMs) {
-      return backoffMs;
-    }
-
-    if (retryDelayMs === undefined) {
-      return DOWNLOAD_BACKOFF_MS;
-    }
-
-    return [retryDelayMs];
-  })();
+  const effectiveBackoffMs = resolveBackoffMs(backoffMs, retryDelayMs);
   let remainingCandidates = [...candidates];
   const failedMirrorLabels: string[] = [];
   let lastTransferError: string | undefined;

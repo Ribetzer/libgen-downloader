@@ -17,6 +17,9 @@ interface ServerConfig {
 interface QueueItem {
   id: number;
   md5: string;
+  source: string;
+  url: string;
+  doi: string;
   title: string;
   status: string;
   filename: string;
@@ -29,7 +32,12 @@ interface QueueItem {
 }
 
 interface SearchItem {
+  /** Which library it came from. */
+  source: string;
+  /** LibGen's identifier; empty for a source that has none. */
   md5: string;
+  /** A direct URL, for a source that hands one over instead of an MD5. */
+  downloadURL: string;
   title: string;
   articleTitle: string;
   doi: string;
@@ -40,6 +48,38 @@ interface SearchItem {
   size: string;
   extension: string;
 }
+
+/** Why one library came back empty while the others did not. */
+interface SourceNote {
+  source: string;
+  message: string;
+}
+
+const SOURCE_LABELS: Record<string, string> = {
+  libgen: "LibGen",
+  arxiv: "arXiv",
+  scihub: "Sci-Hub",
+};
+
+const sourceLabel = (source: string): string => SOURCE_LABELS[source] || source;
+
+/**
+ * What identifies a row in the list. An MD5 no longer does it on its own:
+ * arXiv and Sci-Hub results have none, so keying on `md5` alone would give
+ * every one of them the same empty key.
+ */
+const resultKey = (item: SearchItem): string => `${item.source}:${item.md5 || item.downloadURL}`;
+
+/** Everything needed to queue a row, whichever source it came from. */
+const queueRequest = (item: SearchItem) => ({
+  md5: item.md5,
+  url: item.downloadURL,
+  source: item.source,
+  // The work's own title, not LibGen's journal-and-issue line: this is what
+  // ends up in the filename.
+  title: item.articleTitle || item.title,
+  doi: item.doi,
+});
 
 const ACTIVE_STATUSES = new Set(["queued", "resolving", "downloading", "retrying"]);
 
@@ -71,6 +111,10 @@ const Chip = ({ status }: { status: string }) => (
   <span className={`chip ${status}`}>{statusLabel(status)}</span>
 );
 
+const SourceChip = ({ source }: { source: string }) => (
+  <span className={`chip-source ${source}`}>{sourceLabel(source)}</span>
+);
+
 const ItemRows = ({
   items,
   onCancel,
@@ -95,7 +139,12 @@ const ItemRows = ({
             <Chip status={item.status} />
           </td>
           <td className="title">
-            <div>{item.filename || item.title || <span className="md5">{item.md5}</span>}</div>
+            <div>
+              {item.source !== "libgen" && <SourceChip source={item.source} />}
+              {item.filename || item.title || (
+                <span className="md5">{item.md5 || item.url || item.doi}</span>
+              )}
+            </div>
             {item.status === "downloading" && (
               <div className="progress">
                 <div style={{ width: `${percentage}%` }} />
@@ -142,6 +191,10 @@ const App = () => {
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState("");
   const [results, setResults] = useState<SearchItem[]>([]);
+  const [searchNotes, setSearchNotes] = useState<SourceNote[]>([]);
+  // Empty means every source. Isolating one is the honest way to compare
+  // libraries: their relevance scores are not on the same scale.
+  const [sourceFilter, setSourceFilter] = useState("");
   // Indices of results the library already holds.
   const [owned, setOwned] = useState<Set<number>>(new Set());
   const [queueItems, setQueueItems] = useState<QueueItem[]>([]);
@@ -236,9 +289,15 @@ const App = () => {
 
     setSearching(true);
     setSearchError("");
+    setSearchNotes([]);
+    setSourceFilter("");
     try {
       const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
-      const payload = (await response.json()) as { items?: SearchItem[]; error?: string };
+      const payload = (await response.json()) as {
+        items?: SearchItem[];
+        notes?: SourceNote[];
+        error?: string;
+      };
 
       if (payload.error) {
         setSearchError(payload.error);
@@ -248,9 +307,12 @@ const App = () => {
 
       const items = payload.items || [];
       setResults(items);
+      // A library that failed while the others answered. Shown alongside the
+      // results rather than instead of them.
+      setSearchNotes(payload.notes || []);
       setOwned(new Set());
       if (items.length === 0) {
-        setSearchError("Nothing found on any mirror");
+        setSearchError("Nothing found on any source");
       } else {
         void markOwned(items);
       }
@@ -261,11 +323,11 @@ const App = () => {
     }
   }, [query, markOwned]);
 
-  const enqueue = useCallback(async (items: { md5: string; title: string }[]) => {
+  const enqueue = useCallback(async (items: SearchItem[]) => {
     await fetch("/api/queue", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ items }),
+      body: JSON.stringify({ items: items.map((item) => queueRequest(item)) }),
     });
   }, []);
 
@@ -322,6 +384,31 @@ const App = () => {
   const failedCount = useMemo(
     () => history.filter((item) => item.status === "failed").length,
     [history]
+  );
+
+  /** Which libraries actually returned something, in the order they were listed. */
+  const availableSources = useMemo(() => {
+    const seen: string[] = [];
+    for (const item of results) {
+      if (!seen.includes(item.source)) {
+        seen.push(item.source);
+      }
+    }
+
+    return seen;
+  }, [results]);
+
+  /**
+   * The rows to show, each with its position in the unfiltered list. `owned` is
+   * keyed by that position - the library service is asked about every result at
+   * once - so filtering must not renumber them.
+   */
+  const visibleResults = useMemo(
+    () =>
+      results
+        .map((item, index) => ({ item, index }))
+        .filter(({ item }) => !sourceFilter || item.source === sourceFilter),
+    [results, sourceFilter]
   );
 
   return (
@@ -384,10 +471,34 @@ const App = () => {
               </button>
             </div>
             <div className="hint">
-              A DOI or an issue expression is resolved through the JSON API; anything else searches
-              the file index.
+              LibGen and arXiv are searched together; a DOI also goes to Sci-Hub. An issue
+              expression is LibGen&apos;s own and goes only there.
             </div>
             {searchError && <div className="error">{searchError}</div>}
+            {searchNotes.map((note) => (
+              <div className="hint note" key={note.source}>
+                {sourceLabel(note.source)}: {note.message}
+              </div>
+            ))}
+            {availableSources.length > 1 && (
+              <div className="filters">
+                <button
+                  className={`small ${sourceFilter ? "" : "on"}`}
+                  onClick={() => setSourceFilter("")}
+                >
+                  All {results.length}
+                </button>
+                {availableSources.map((source) => (
+                  <button
+                    key={source}
+                    className={`small ${sourceFilter === source ? "on" : ""}`}
+                    onClick={() => setSourceFilter(source)}
+                  >
+                    {sourceLabel(source)} {results.filter((item) => item.source === source).length}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           {results.length > 0 && (
@@ -395,6 +506,7 @@ const App = () => {
               <thead>
                 <tr>
                   <th className="title">Title</th>
+                  <th className="nowrap">Source</th>
                   <th className="nowrap">Year</th>
                   <th className="nowrap">Type</th>
                   <th className="nowrap">Size</th>
@@ -402,21 +514,17 @@ const App = () => {
                     <div className="row-actions">
                       <button
                         className="small"
-                        onClick={() =>
-                          void enqueue(
-                            results.map((item) => ({ md5: item.md5, title: item.title }))
-                          )
-                        }
+                        onClick={() => void enqueue(visibleResults.map(({ item }) => item))}
                       >
-                        Queue all
+                        Queue {sourceFilter ? sourceLabel(sourceFilter) : "all"}
                       </button>
                     </div>
                   </th>
                 </tr>
               </thead>
               <tbody>
-                {results.map((item, index) => (
-                  <tr key={item.md5} className={owned.has(index) ? "owned" : undefined}>
+                {visibleResults.map(({ item, index }) => (
+                  <tr key={resultKey(item)} className={owned.has(index) ? "owned" : undefined}>
                     <td className="title">
                       <div>
                         {item.articleTitle || item.title}
@@ -427,15 +535,15 @@ const App = () => {
                         {item.doi && ` · ${item.doi}`}
                       </div>
                     </td>
+                    <td className="nowrap">
+                      <SourceChip source={item.source} />
+                    </td>
                     <td className="nowrap">{item.year}</td>
                     <td className="nowrap">{item.extension}</td>
                     <td className="nowrap">{item.size}</td>
                     <td className="nowrap">
                       <div className="row-actions">
-                        <button
-                          className="small"
-                          onClick={() => void enqueue([{ md5: item.md5, title: item.title }])}
-                        >
+                        <button className="small" onClick={() => void enqueue([item])}>
                           {owned.has(index) ? "Queue anyway" : "Queue"}
                         </button>
                       </div>

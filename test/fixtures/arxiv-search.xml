@@ -1,0 +1,85 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<feed xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/" xmlns:arxiv="http://arxiv.org/schemas/atom" xmlns="http://www.w3.org/2005/Atom">
+  <id>https://arxiv.org/api/2UQL8hjQupCmFdoNu+jG/kx5fjI</id>
+  <title>arXiv Query: search_query=all:"signed distance field"&amp;id_list=&amp;start=0&amp;max_results=3</title>
+  <updated>2026-08-25T20:10:33Z</updated>
+  <link href="https://arxiv.org/api/query?search_query=all:%22signed+distance+field%22&amp;start=0&amp;max_results=3&amp;id_list=" type="application/atom+xml"/>
+  <opensearch:itemsPerPage>3</opensearch:itemsPerPage>
+  <opensearch:totalResults>384</opensearch:totalResults>
+  <opensearch:startIndex>0</opensearch:startIndex>
+  <entry>
+    <id>http://arxiv.org/abs/2304.00359v1</id>
+    <title>SeSDF: Self-evolved Signed Distance Field for Implicit 3D Clothed Human Reconstruction</title>
+    <updated>2023-04-01T16:58:19Z</updated>
+    <link href="https://arxiv.org/abs/2304.00359v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2304.00359v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>We address the problem of clothed human reconstruction from a single image or uncalibrated multi-view images. Existing methods struggle with reconstructing detailed geometry of a clothed human and often require a calibrated setting for multi-view reconstruction. We propose a flexible framework which, by leveraging the parametric SMPL-X model, can take an arbitrary number of input images to reconstruct a clothed human model under an uncalibrated setting. At the core of our framework is our novel self-evolved signed distance field (SeSDF) module which allows the framework to learn to deform the signed distance field (SDF) derived from the fitted SMPL-X model, such that detailed geometry reflecting the actual clothed human can be encoded for better reconstruction. Besides, we propose a simple method for self-calibration of multi-view images via the fitted SMPL-X parameters. This lifts the requirement of tedious manual calibration and largely increases the flexibility of our method. Further, we introduce an effective occlusion-aware feature fusion strategy to account for the most useful features to reconstruct the human model. We thoroughly evaluate our framework on public benchmarks, demonstrating significant superiority over the state-of-the-arts both qualitatively and quantitatively.</summary>
+    <category term="cs.CV" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2023-04-01T16:58:19Z</published>
+    <arxiv:comment>25 pages, 21 figures</arxiv:comment>
+    <arxiv:primary_category term="cs.CV"/>
+    <author>
+      <name>Yukang Cao</name>
+    </author>
+    <author>
+      <name>Kai Han</name>
+    </author>
+    <author>
+      <name>Kwan-Yee K. Wong</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2311.00626v2</id>
+    <title>nvblox: GPU-Accelerated Incremental Signed Distance Field Mapping</title>
+    <updated>2024-03-15T16:57:29Z</updated>
+    <link href="https://arxiv.org/abs/2311.00626v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2311.00626v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Dense, volumetric maps are essential to enable robot navigation and interaction with the environment. To achieve low latency, dense maps are typically computed onboard the robot, often on computationally constrained hardware. Previous works leave a gap between CPU-based systems for robotic mapping which, due to computation constraints, limit map resolution or scale, and GPU-based reconstruction systems which omit features that are critical to robotic path planning, such as computation of the Euclidean Signed Distance Field (ESDF). We introduce a library, nvblox, that aims to fill this gap, by GPU-accelerating robotic volumetric mapping. Nvblox delivers a significant performance improvement over the state of the art, achieving up to a 177x speed-up in surface reconstruction, and up to a 31x improvement in distance field computation, and is available open-source.</summary>
+    <category term="cs.RO" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2023-11-01T16:23:59Z</published>
+    <arxiv:comment>Accepted to ICRA 2024</arxiv:comment>
+    <arxiv:primary_category term="cs.RO"/>
+    <author>
+      <name>Alexander Millane</name>
+    </author>
+    <author>
+      <name>Helen Oleynikova</name>
+    </author>
+    <author>
+      <name>Emilie Wirbel</name>
+    </author>
+    <author>
+      <name>Remo Steiner</name>
+    </author>
+    <author>
+      <name>Vikram Ramasamy</name>
+    </author>
+    <author>
+      <name>David Tingdahl</name>
+    </author>
+    <author>
+      <name>Roland Siegwart</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2108.09964v1</id>
+    <title>Learning Signed Distance Field for Multi-view Surface Reconstruction</title>
+    <updated>2021-08-23T06:23:50Z</updated>
+    <link href="https://arxiv.org/abs/2108.09964v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2108.09964v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Recent works on implicit neural representations have shown promising results for multi-view surface reconstruction. However, most approaches are limited to relatively simple geometries and usually require clean object masks for reconstructing complex and concave objects. In this work, we introduce a novel neural surface reconstruction framework that leverages the knowledge of stereo matching and feature consistency to optimize the implicit surface representation. More specifically, we apply a signed distance field (SDF) and a surface light field to represent the scene geometry and appearance respectively. The SDF is directly supervised by geometry from stereo matching, and is refined by optimizing the multi-view feature consistency and the fidelity of rendered images. Our method is able to improve the robustness of geometry estimation and support reconstruction of complex scene topologies. Extensive experiments have been conducted on DTU, EPFL and Tanks and Temples datasets. Compared to previous state-of-the-art methods, our method achieves better mesh reconstruction in wide open scenes without masks as input.</summary>
+    <category term="cs.CV" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2021-08-23T06:23:50Z</published>
+    <arxiv:comment>ICCV 2021 (Oral)</arxiv:comment>
+    <arxiv:primary_category term="cs.CV"/>
+    <author>
+      <name>Jingyang Zhang</name>
+    </author>
+    <author>
+      <name>Yao Yao</name>
+    </author>
+    <author>
+      <name>Long Quan</name>
+    </author>
+  </entry>
+</feed>

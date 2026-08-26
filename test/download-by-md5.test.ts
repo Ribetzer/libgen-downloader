@@ -4,7 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import { Writable } from "node:stream";
 import { LibgenPlusAdapter } from "../src/api/adapters/libgen-plus-adapter";
-import { downloadByMD5, readRetryAfterMs } from "../src/api/data/download";
+import {
+  downloadByMD5,
+  downloadFromURL,
+  readFileNameFromURL,
+  readRetryAfterMs,
+} from "../src/api/data/download";
 import { MAX_RETRY_AFTER_MS } from "../src/settings";
 import type { MirrorCandidate } from "../src/api/data/resolve";
 import { mockFetch } from "./support/fetch-mock";
@@ -541,5 +546,133 @@ describe("downloadByMD5", () => {
     expect(outcome.status).toBe("failed");
     // Five gaps for six attempts, rising then holding at the final entry.
     expect(waits).toEqual([1000, 2000, 4000, 4000, 4000]);
+  });
+});
+
+describe("readFileNameFromURL", () => {
+  it("takes the last path segment", () => {
+    expect(readFileNameFromURL("https://sci-hub.red/storage/a/b/lorensen1987.pdf")).toBe(
+      "lorensen1987.pdf"
+    );
+  });
+
+  it("ignores a trailing slash rather than returning nothing", () => {
+    expect(readFileNameFromURL("https://x.example/papers/report.pdf/")).toBe("report.pdf");
+  });
+
+  it("decodes an escaped name", () => {
+    expect(readFileNameFromURL("https://x.example/a%20paper.pdf")).toBe("a paper.pdf");
+  });
+
+  it("returns nothing for a URL with no path", () => {
+    expect(readFileNameFromURL("https://x.example/")).toBe("");
+  });
+
+  it("does not throw on something that is not a URL", () => {
+    expect(readFileNameFromURL("not a url")).toBe("");
+  });
+});
+
+describe("downloadFromURL", () => {
+  it("downloads without resolving anything against a mirror", async () => {
+    const chunks = collectWrites();
+    const { fetchMock, requestedURLs } = mockFetch(async () => fileResponse());
+
+    const outcome = await downloadFromURL({
+      downloadURL: "https://arxiv.org/pdf/2304.00359v1",
+      ...noopCallbacks,
+    });
+    fetchMock.mockRestore();
+
+    expect(outcome.status).toBe("downloaded");
+    // One request: no detail page walked, because there is nothing to resolve.
+    expect(requestedURLs).toEqual(["https://arxiv.org/pdf/2304.00359v1"]);
+    expect(Buffer.concat(chunks).toString()).toBe("downloaded content");
+  });
+
+  it("builds a name from the URL when the response declares none", async () => {
+    // Sci-Hub's storage host sends neither content-disposition nor
+    // content-length. Without the URL fallback every download from it would
+    // fail on the missing header alone.
+    collectWrites();
+    const { fetchMock } = mockFetch(async () => new Response("%PDF-1.4 body"));
+
+    let observedName = "";
+    const outcome = await downloadFromURL({
+      downloadURL: "https://sci-hub.red/storage/twin/6684/abc/lorensen1987.pdf",
+      outputDirectory: OUTPUT_DIRECTORY,
+      preferredTitle: "Marching cubes",
+      preferredDOI: "10.1145/37402.37422",
+      onStart: (filename) => {
+        observedName = filename;
+      },
+      onProgress: () => {},
+    });
+    fetchMock.mockRestore();
+
+    expect(outcome.status).toBe("downloaded");
+    // The URL supplies the extension; the readable part comes from the caller,
+    // and the DOI is what lets the RAG identify the file from its name alone.
+    expect(observedName).toBe("Marching cubes [10.1145_37402.37422].pdf");
+  });
+
+  it("reuses the retry machinery instead of giving up on one bad response", async () => {
+    collectWrites();
+    let calls = 0;
+    const { fetchMock } = mockFetch(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return new Response("", { status: 500 });
+      }
+
+      return fileResponse();
+    });
+
+    const outcome = await downloadFromURL({
+      downloadURL: "https://arxiv.org/pdf/2304.00359v1",
+      retryDelayMs: 0,
+      ...noopCallbacks,
+    });
+    fetchMock.mockRestore();
+
+    expect(calls).toBe(2);
+    expect(outcome.status).toBe("downloaded");
+  });
+
+  it("reports the last error when the attempts run out", async () => {
+    collectWrites();
+    const { fetchMock } = mockFetch(async () => new Response("", { status: 404 }));
+
+    const outcome = await downloadFromURL({
+      downloadURL: "https://arxiv.org/pdf/2304.00359v1",
+      retryDelayMs: 0,
+      ...noopCallbacks,
+    });
+    fetchMock.mockRestore();
+
+    expect(outcome.status).toBe("failed");
+    if (outcome.status !== "failed") {
+      return;
+    }
+
+    expect(outcome.reason).toContain("HTTP 404");
+  });
+
+  it("sends the headers a source asks for", async () => {
+    collectWrites();
+    let sentAgent = "";
+    const { fetchMock } = mockFetch(async (_input, init) => {
+      sentAgent = ((init?.headers || {}) as Record<string, string>)["user-agent"] || "";
+      return fileResponse();
+    });
+
+    await downloadFromURL({
+      downloadURL: "https://arxiv.org/pdf/2304.00359v1",
+      headers: { "user-agent": "libgen-downloader" },
+      ...noopCallbacks,
+    });
+    fetchMock.mockRestore();
+
+    expect(sentAgent).toBe("libgen-downloader");
   });
 });
