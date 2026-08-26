@@ -1,22 +1,22 @@
-
 # libgen-downloader
 
 [![npm version](https://badge.fury.io/js/libgen-downloader.svg)](https://badge.fury.io/js/libgen-downloader)
 
-
 `libgen-downloader` is a command-line tool for searching and downloading ebooks from **LibGen**. Built with `Node.js`, `TypeScript`, `React`, `Ink`, and `Zustand`, it works by visiting LibGen’s web pages, parsing the HTML, and displaying results. Since it relies on LibGen’s servers, you may occasionally encounter connection errors when searching, downloading, or loading more pages.
 
+This fork also searches **arXiv** and **Sci-Hub** alongside LibGen, so a paper
+that only one of them holds still turns up — see [Searching more than one
+library](#searching-more-than-one-library).
+
 ## Important Update
+
 After the original `libgen` mirrors are blocked and not available anymore (see their status from here https://open-slum.org/), `libgen-downloader` now uses the `libgen+` mirrors as its primary source. You can see the new available mirrors from [configuration](https://github.com/obsfx/libgen-downloader/blob/configuration/config.v3.json).
 
 https://github.com/user-attachments/assets/3d92eb78-1567-478d-a0d1-5724f647be10
 
 https://github.com/user-attachments/assets/9896d457-ccbf-40aa-ae6b-c253f7a97824
 
-
-
 ## Installation
-
 
 if you have already installed `NodeJS` and `npm`, you can install it using `npm`:
 
@@ -29,12 +29,14 @@ or you can download one of the `standalone executable` versions.
 #### [Standalone Executables](https://github.com/obsfx/libgen-downloader/releases)
 
 **macOS users:** After downloading, you need to remove the quarantine attribute and make it executable:
+
 ```bash
 xattr -c ./libgen-downloader-macos-*
 chmod +x ./libgen-downloader-macos-*
 ```
 
 **Linux users:** Make it executable:
+
 ```bash
 chmod +x ./libgen-downloader-linux-*
 ```
@@ -64,22 +66,41 @@ flowchart TD
     BQ --> DL
 
     SERVER["src/server<br/>HTTP API + web UI"] --> QS["QueueService"]
-    QS --> DL
+    QS -->|"has an MD5"| DL
+    QS -->|"has only a URL"| DFU["downloadFromURL()"]
+
+    SERVER --> SS["searchSources()<br/>fan-out, merge, notes"]
+    SS --> SLG["libgen<br/>text / DOI / issue"]
+    SS --> SAX["arxiv<br/>text only"]
+    SS --> SSH["scihub<br/>DOI only"]
 
     DL --> ADAPTER["Adapter<br/>URL shapes, DOM selectors"]
     ADAPTER --> MIRROR{{"LibGen mirrors"}}
+    SLG --> ADAPTER
+    SAX --> AXH{{"arXiv API"}}
+    SSH --> SHH{{"Sci-Hub<br/>pinned certificate"}}
 
     style DL fill:#e8f0fe,stroke:#4c9aff
+    style DFU fill:#e8f0fe,stroke:#4c9aff
     style STORE fill:#fff4e5,stroke:#d9a02e
     style MIRROR fill:#f0f0f0,stroke:#888
+    style AXH fill:#f0f0f0,stroke:#888
+    style SHH fill:#f0f0f0,stroke:#888
 ```
 
 Nothing outside `src/api/adapters/` knows LibGen's HTML or URL structure, so
 supporting a new mirror type is a subclass plus a case in `getAdapter()`.
 
+**A _source_ is a library; an _adapter_ is a mirror of one.** `Adapter`
+abstracts over mirrors of the same catalogue — same HTML, same MD5s, same
+detail pages — which is what makes mirror failover possible. arXiv has none of
+those, so it implements the smaller `Source` interface in `src/api/sources/`
+instead. Adding a library is a new `Source`; adding a mirror of LibGen is a new
+`Adapter`.
+
 ### Downloading one file
 
-The interesting part is the failure handling. A transfer recovers by *mirror*,
+The interesting part is the failure handling. A transfer recovers by _mirror_,
 not just by retry, and a partial file is always deleted — a truncated PDF that
 survives is indistinguishable from a complete one, which is how 16 papers once
 entered a corpus as unreadable stubs.
@@ -96,33 +117,34 @@ flowchart TD
     BACKOFF --> FETCH
 
     FETCH -->|"ok"| NAME["buildDownloadFileName()<br/>repair mojibake, trim TITLE only"]
-    NAME --> STREAM["pipeline(source, progress, file)"]
+    NAME --> STREAM["pipeline(source, progress, .part)"]
 
     STREAM -.->|"60s with no bytes"| STALL["stall watchdog<br/>destroy source"]
-    STALL --> PARTIAL
+    STALL --> KEEP
 
-    STREAM -->|"error"| PARTIAL["removePartialFile()<br/>a short file is deleted,<br/>never kept"]
-    PARTIAL --> RETRY{"attempts left?"}
+    STREAM -->|"error"| KEEP["keep the .part<br/>next attempt resumes from it<br/>(append only on 206)"]
+    KEEP --> RETRY{"attempts left?"}
     RETRY -->|"yes"| FETCH
     RETRY -->|"no"| NEXTMIRROR{"another mirror?"}
     NEXTMIRROR -->|"yes"| RESOLVE
-    NEXTMIRROR -->|"no"| FAILED["failed"]
+    NEXTMIRROR -->|"no"| PARTIAL["removePartialFile()<br/>a short file is deleted,<br/>never left at the real name"]
+    PARTIAL --> FAILED["failed"]
 
-    STREAM -->|"complete"| DONE["file on disk<br/>onProgress reports ABSOLUTE bytes"]
+    STREAM -->|"complete"| DONE["rename .part to the real name<br/>onProgress reports ABSOLUTE bytes"]
 
     style STALL fill:#ffe8e8,stroke:#f05a5a
     style PARTIAL fill:#ffe8e8,stroke:#f05a5a
     style DONE fill:#e8f7ea,stroke:#3fb950
 ```
 
-The stall watchdog exists because a server that stops sending bytes *without
-closing the socket* never raises an error: `attempt()` never sees a failure and
+The stall watchdog exists because a server that stops sending bytes _without
+closing the socket_ never raises an error: `attempt()` never sees a failure and
 the whole sequential queue blocks behind one file, indefinitely.
 
-*(Rendered natively by GitHub, and by the VS Code Markdown preview since
+_(Rendered natively by GitHub, and by the VS Code Markdown preview since
 [1.121](https://code.visualstudio.com/updates/v1_121#_mermaid-diagrams-in-markdown-preview-and-notebooks),
 which ships a built-in `Mermaid Markdown Features` extension — no setup, and it
-pans and zooms.)*
+pans and zooms.)_
 
 ## Features
 
@@ -130,19 +152,27 @@ pans and zooms.)*
 - Non app blocking direct downloading.
 - Bulk downloading.
 - Alternative download options.
+- Searches LibGen, arXiv and Sci-Hub together and merges the results, labelled
+  by source. A source being down costs you that source's rows and a note
+  saying so, never the whole search.
 - Mirror failover for downloads. Every LibGen instance keeps its own catalogue,
   so an MD5 that is missing from the active mirror is looked up on the others
   before it is reported as failed. The mirror that served a file is tried first
   for the rest of the run, and a failed row states why it failed.
-- Interrupted transfers are restarted a few times, and a truncated file is
-  removed instead of being left behind as a half-written download. A mirror
-  answering `429` or `503` is backed off from rather than hammered.
+- Interrupted transfers are restarted up to six times per mirror, with a
+  growing backoff and a 45-minute ceiling on the whole thing, because an
+  attempt count bounds tries and not the hours they can take. Bytes land in a
+  `.part` file that is renamed only when the transfer completes, so nothing at
+  the real filename is ever half a file. A resume is asked for and used only if
+  the server actually grants one. A mirror answering `429` or `503` is backed
+  off from rather than hammered.
 - Readable filenames: `Title (Year) [DOI].pdf`, with the encoding repaired and
   characters Windows rejects replaced.
 - A file already present at its full size is left alone, so re-running a list
   only fetches what is still missing.
 - Configurable download folder, for one run or remembered between runs.
 - Command line parameters;
+
   ```
   Usage
   	$ libgen-downloader <input>
@@ -182,6 +212,44 @@ every file in it through the normal bulk download.
 In the interactive search box the same inputs work: paste a DOI, or type
 `issuesid:13647 issuevolume:17`, and the results list fills with that record's
 files, ready to download or add to the bulk queue.
+
+## Searching more than one library
+
+A plain text search asks LibGen, **arXiv** and — for a DOI — **Sci-Hub**, all
+at the same time, and merges the results into one list. Each row says where it
+came from, and the web UI can filter to a single source.
+
+| source  | answers                | identified by |
+| ------- | ---------------------- | ------------- |
+| LibGen  | text, DOI, `issuesid:` | MD5           |
+| arXiv   | text only              | URL           |
+| Sci-Hub | DOI only               | URL           |
+
+Two consequences worth knowing:
+
+- **A source that is down does not fail the search.** If arXiv times out you
+  still get LibGen's results, plus a note saying arXiv could not be reached. A
+  search only fails when every source it asked has failed — so a thin result
+  set is never quietly a broken one.
+- **arXiv is not asked for a DOI.** Its API has no DOI field; a `doi:` query is
+  accepted and comes back empty, which would read as "arXiv doesn't have it"
+  rather than "arXiv can't be asked that". Sci-Hub, conversely, is _only_
+  asked for a DOI — it has no search at all.
+
+Sci-Hub distinguishes a paper it does not hold from one it is refusing to serve
+right now. A rate-limited lookup is reported as rate-limited, not as "not
+found", because those call for opposite next moves: wait, or go look somewhere
+else.
+
+Downloads work the same way whichever source a row came from. LibGen rows
+resolve an MD5 across mirrors as before; arXiv and Sci-Hub rows carry their own
+URL and are fetched directly, through the same retry, backoff, stall watchdog
+and partial-file handling.
+
+Sci-Hub's pages sit behind DDoS-Guard's self-signed certificate, so those
+requests trust that one certificate specifically — TLS verification stays fully
+on for everything else, and a substituted certificate is rejected. Set
+`LIBGEN_SCIHUB_HOSTS` (comma-separated) if the default hosts stop resolving.
 
 ## MD5 list files
 
@@ -245,8 +313,13 @@ bun run start:server
 
 then open `http://localhost:8095`. Configuration is by environment variable:
 `LIBGEN_PORT` (8095), `LIBGEN_OUTPUT_DIR` (`/downloads`), `LIBGEN_CONFIG_DIR`
-(`/config`, holds the SQLite database), `LIBGEN_VOLUME_MARKER` (below), and
+(`/config`, holds the SQLite database), `LIBGEN_VOLUME_MARKER` (below),
+`LIBGEN_SCIHUB_HOSTS` (comma-separated, overrides the built-in host list), and
 `PUID`/`PGID`/`TZ` in the container.
+
+Results carry a source badge and can be filtered to one library. Rows from
+arXiv and Sci-Hub have no MD5 — they queue by URL — so the queue and history
+carry both, and a retry keeps the row pointing at the source it came from.
 
 ### Driving it over HTTP
 
@@ -265,8 +338,17 @@ POST /api/history/dismiss  {"id": N} drops one failure from the set
 GET  /api/history/failed.txt   an MD5 list of the failures
 ```
 
-`POST /api/queue` resolves a DOI to an MD5 for you, so a caller that knows only
-citations never has to touch the search endpoint.
+`POST /api/queue` takes `{"md5": …}`, `{"doi": …}` or `{"url": …}`. The DOI
+form resolves through LibGen _and_ Sci-Hub for you, so a caller that knows only
+citations never has to touch the search endpoint, and a paper LibGen never held
+is still reachable by DOI alone.
+
+`GET /api/search` answers `{"items": [...], "notes": [...]}`. Each note names a
+source that failed or was rate-limited — without them, a partial result set is
+indistinguishable from a complete one.
+
+`failed.txt` is an MD5 list, so rows that have only a URL are written as `#`
+comments. They are there to read, not to feed back in.
 
 ### Downloading to a removable disk
 
@@ -282,7 +364,7 @@ volume carries, for example:
 with `.libgen-volume` sitting in that directory on the disk itself.
 
 The check exists because the dangerous case is not a missing mount but a
-*phantom* one. With the disk unplugged, Docker is free to create the bind-mount
+_phantom_ one. With the disk unplugged, Docker is free to create the bind-mount
 target and WSL2 can hold a stale mount point, so the container gets an empty,
 writable directory that reaches no disk — a write test passes and the downloads
 are lost with it. A marker file cannot be faked that way.
@@ -476,9 +558,9 @@ v2.0.0
 - Added a cache mechanism to quickly retrieve previously searched results..
 - Added new CLI parameter `-s, --search` to search queries directly in the command line.
 - Added new shortcut keys to simplify usage:
-	- `[J]` and `[K]` to move up and down for vimmers.
-	- `[TAB]` to add an entry to the bulk download queue.
-	- `[D]` to download an entry directly.
+  - `[J]` and `[K]` to move up and down for vimmers.
+  - `[TAB]` to add an entry to the bulk download queue.
+  - `[D]` to download an entry directly.
 - Dropped result filtering. Instead added `Search by` filtering options to filter in columns like the original libgen search functionality.
 
 ---
