@@ -79,6 +79,18 @@ export const CORPUS_TIMEOUT_MS = 5000;
 
 export const SEARCH_PAGE_SIZE = 25;
 
+// LibGen's `ads.php` - the only page carrying the per-request `key` that
+// `get.php` needs - answers a bare request with 200 and a zero-byte body. It
+// wants a browser User-Agent *and* a Referer; either alone is refused. An empty
+// body parses into an empty document, so every mirror looked like it held no
+// record for the MD5, which is how a hotlink check reads as "not found
+// anywhere". Unlike ARXIV_USER_AGENT, which names this tool because arXiv's
+// terms ask callers to identify themselves, this one has to look like a
+// browser to be served at all.
+export const BROWSER_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
+  "Chrome/131.0.0.0 Safari/537.36";
+
 // arXiv, searched alongside LibGen rather than instead of it. Fewer rows than
 // LibGen returns on purpose: the two lists are concatenated, and a preprint
 // server should add to a catalogue search, not bury it.
