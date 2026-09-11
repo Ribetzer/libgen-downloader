@@ -22,7 +22,7 @@ without their downloads landing in one undifferentiated folder.
 
 ### Decisions already made
 
-- **One codebase, on `master`.** No long-lived deployment branch and no
+- **One codebase, on `main`.** No long-lived deployment branch and no
   separate "hosted" copy. A permanent variant branch means every fix lands
   twice or drifts. Deployment differences are env vars plus one compose file
   per topology.
@@ -135,11 +135,3 @@ These do not depend on anything above and should not wait for it.
   bug. The symptom is every LAN address being unreachable while the config
   looks correct. `docker-compose.local.yml:88` also still has a stale
   `NET_LOCAL` reference in a comment.
-
-- **`ghcr.io/ribetzer/libgen-downloader:latest` does not exist.**
-  `docker-compose.example.yml` tells people to pull it, but `docker.yml` only
-  tags `latest` on the default branch, and neither the `Dockerfile` nor
-  `docker.yml` is on `master` — both are `feat/web-ui-docker` only. Merging
-  that branch to `master` is what makes the reference real. The merge is a
-  clean fast-forward: `master` is a direct ancestor of the branch, sitting at
-  upstream's v3.3.3 with no commits of its own.

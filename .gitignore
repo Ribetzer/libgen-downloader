@@ -28,3 +28,6 @@ downloads/
 # machine's addresses, so it stays local; .env.example is the committed copy.
 .env
 !.env.example
+
+# Cygwin/MSYS2 writes one of these when bash.exe crashes. Debris, never wanted.
+*.stackdump
