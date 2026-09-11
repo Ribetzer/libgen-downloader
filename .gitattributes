@@ -1,0 +1,13 @@
+# Shell scripts must keep LF in the working tree, not just in the index.
+#
+# Docker COPYs the working-tree file, so on a Windows checkout a CRLF
+# entrypoint.sh ships a `#!/bin/sh\r` shebang. The kernel then looks for an
+# interpreter literally named `/bin/sh\r`, and the container dies on a loop
+# with "exec /entrypoint.sh: no such file or directory" - which names the
+# script, not the interpreter, and so reads as a missing file rather than a
+# line ending.
+*.sh text eol=lf
+
+# Same reasoning: these are read inside the build, where CR is not whitespace.
+Dockerfile text eol=lf
+.dockerignore text eol=lf
