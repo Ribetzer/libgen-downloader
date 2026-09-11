@@ -110,6 +110,18 @@ export const ARXIV_USER_AGENT = "libgen-downloader (+https://github.com/obsfx/li
 // longer resolves on any resolver, which is why it is not in this list.
 export const SCIHUB_HOSTS = ["sci-hub.st", "sci-hub.ru"];
 
+// Sci-Hub's captcha is rate-triggered, so a batch of DOIs queued back to back
+// trips it and then reads back as "no file on any source" - the papers look
+// absent when they were never really asked for. Unlike arXiv's interval, which
+// is a published term of use, this one is inferred: it only has to be slow
+// enough that a queue drain does not look like a scrape.
+export const SCIHUB_MIN_INTERVAL_MS = 5000;
+
+// What the challenge page itself suggests ("try again in a minute"). Taking it
+// at its word beats guessing, and beats carrying on at the normal interval and
+// collecting a wall of false negatives.
+export const SCIHUB_CHALLENGE_COOLDOWN_MS = 60_000;
+
 // The editions tab honours `res` and `page`, so a periodical is collected a
 // page at a time with a cap that keeps a whole-journal query bounded.
 export const ISSUE_PAGE_SIZE = 100;

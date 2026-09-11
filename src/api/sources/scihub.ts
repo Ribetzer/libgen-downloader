@@ -1,5 +1,6 @@
 import { parseHTML } from "linkedom";
-import { SCIHUB_HOSTS } from "../../settings";
+import { SCIHUB_CHALLENGE_COOLDOWN_MS, SCIHUB_HOSTS, SCIHUB_MIN_INTERVAL_MS } from "../../settings";
+import { delay } from "../../utilities";
 import type { Source, SourceResult } from "./index";
 
 /**
@@ -205,6 +206,47 @@ const buildResult = (doi: string, host: string, page: SciHubPage & { status: "fo
   return result;
 };
 
+/**
+ * Request spacing, at module scope for the same reason arXiv's is: the limit
+ * belongs to the remote site per client, so two concurrent searches must queue
+ * behind one another rather than each keep a private timer.
+ *
+ * The difference from arXiv is that Sci-Hub says when it has had enough. A
+ * challenge page is a direct instruction to slow down, so it sets a cooldown
+ * rather than being retried at the usual interval - which is what turns a
+ * throttled batch into a page of false "not found" answers.
+ */
+let lastRequestAt = 0;
+let cooldownUntil = 0;
+
+/** How long a request arriving now has to wait: the interval or the cooldown. */
+export const scihubWaitMs = (
+  now: number,
+  previousRequestAt: number,
+  challengedUntil: number
+): number => Math.max(0, previousRequestAt + SCIHUB_MIN_INTERVAL_MS - now, challengedUntil - now);
+
+/** When the current captcha cooldown expires; 0 when there is none. */
+export const scihubCooldownUntil = (): number => cooldownUntil;
+
+const pace = async (): Promise<void> => {
+  const now = Date.now();
+  const waitMs = scihubWaitMs(now, lastRequestAt, cooldownUntil);
+  // Claim the slot before waiting, so callers arriving together space out
+  // instead of all reading the same stale timestamp and going out at once.
+  lastRequestAt = Math.max(now, lastRequestAt + SCIHUB_MIN_INTERVAL_MS, cooldownUntil);
+
+  if (waitMs > 0) {
+    await delay(waitMs);
+  }
+};
+
+/** For tests, which must not sit out a real interval or a real minute. */
+export const resetScihubPacing = (): void => {
+  lastRequestAt = 0;
+  cooldownUntil = 0;
+};
+
 export const scihubSource: Source = {
   id: "scihub",
   label: "Sci-Hub",
@@ -218,6 +260,12 @@ export const scihubSource: Source = {
     const hosts = getSciHubHosts();
     const failures: string[] = [];
     let challenged = false;
+
+    // Once per search, not once per host. A search reaches a second host only
+    // when the first was challenged or unreachable, so it is worth at most two
+    // requests; it is a queue draining ninety-odd DOIs that trips the captcha,
+    // and spacing there must not make a single interactive lookup sit and wait.
+    await pace();
 
     for (const host of hosts) {
       let response: Response;
@@ -238,6 +286,10 @@ export const scihubSource: Source = {
 
       if (page.status === "challenged") {
         challenged = true;
+        // Taken at the page's own word. Every host is behind the same rate
+        // limiter, so this holds the next caller off all of them, not just
+        // the one that answered.
+        cooldownUntil = Date.now() + SCIHUB_CHALLENGE_COOLDOWN_MS;
         continue;
       }
 
