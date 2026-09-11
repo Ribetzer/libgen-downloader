@@ -25,9 +25,12 @@ bun run format:check     # prettier (bun run format to write)
 
 bun run build            # Node bundle -> build/index.js (adds shebang)
 bun run compile          # standalone executables -> standalone-executables/
+
+bun run build:webui      # bundles web/ and src/server/ into build/
+bun run start:server     # serves the built UI + JSON API, default http://localhost:8095
 ```
 
-CI (`.github/workflows/pull-request.yml`, runs on PRs to `master`) executes typecheck → test → lint → format:check → build, then smoke-tests the bundle with `node build/index.js --help`. Run those five locally before pushing.
+CI (`.github/workflows/pull-request.yml`, runs on PRs to `master`) executes typecheck → test → lint → format:check → build, then smoke-tests the bundle with `node build/index.js --help`. Run those five locally before pushing. It does not build or exercise the web UI/server (`build:webui`) — those are covered only by `bun test`, since the server code has no separate CI job.
 
 Releases are automated: the **Version Bump** workflow runs `npm version`, commits, tags `vX.Y.Z`, and calls `release.yml`, which cross-compiles executables for six targets and publishes a GitHub release. Never hand-edit the version or push tags manually.
 
