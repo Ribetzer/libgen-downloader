@@ -46,6 +46,11 @@
 # wg0.conf, and each is one of the account's simultaneous connections. To add
 # a lane: copy a block, give it the next address, and append it to
 # LIBGEN_PROXIES.
+#
+# This stack runs with IPv6 off, and gluetun refuses a config that gives the
+# interface an IPv6 address ("interface address is IPv6 but IPv6 is not
+# supported"). A config downloaded with IPv6 on carries one on its Address and
+# DNS lines - drop the IPv6 entries there, keeping the 10.2.0.x ones.
 x-lane: &lane
   image: qmcgaw/gluetun:latest
   cap_add:
@@ -165,6 +170,26 @@ services:
       lanes:
         ipv4_address: 172.30.0.16
 
+  gluetun-dk-141:
+    <<: *lane
+    container_name: libgen-gluetun-dk-141
+    environment: *lane-environment
+    volumes:
+      - ./docker-data/gluetun-dk-141:/gluetun
+    networks:
+      lanes:
+        ipv4_address: 172.30.0.17
+
+  gluetun-dk-145:
+    <<: *lane
+    container_name: libgen-gluetun-dk-145
+    environment: *lane-environment
+    volumes:
+      - ./docker-data/gluetun-dk-145:/gluetun
+    networks:
+      lanes:
+        ipv4_address: 172.30.0.18
+
   libgen-downloader:
     build: .
     container_name: libgen-downloader
@@ -199,7 +224,7 @@ services:
       # lane too, named here. Downloads run two per lane unless
       # LIBGEN_CONCURRENCY says otherwise.
       - LIBGEN_LANE_NAME=FI-13
-      - LIBGEN_PROXIES=DE-6=http://172.30.0.11:8888,FI-37=http://172.30.0.12:8888,CH-278=http://172.30.0.13:8888,FI-33=http://172.30.0.14:8888,DK-93=http://172.30.0.15:8888,DK-97=http://172.30.0.16:8888
+      - LIBGEN_PROXIES=DE-6=http://172.30.0.11:8888,FI-37=http://172.30.0.12:8888,CH-278=http://172.30.0.13:8888,FI-33=http://172.30.0.14:8888,DK-93=http://172.30.0.15:8888,DK-97=http://172.30.0.16:8888,DK-141=http://172.30.0.17:8888,DK-145=http://172.30.0.18:8888
     volumes:
       - ./docker-data/config:/config
       - D:/Papers/inbox:/downloads
