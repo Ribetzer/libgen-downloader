@@ -485,6 +485,12 @@ export class QueueService {
     const outcome = await downloadByMD5({
       md5: item.md5,
       lane,
+      // With Anna's Archive to fall back on, LibGen gets a short try: its
+      // download server drops transfers and restarts them from zero, and the
+      // full patience spent most of an hour failing before the file was
+      // fetched from Anna's in a minute. Full patience again once the day's
+      // allowance is gone.
+      quickTry: this.annasAvailable(),
       candidates: this.mirrors.getCandidates(),
       onMirrorUnreachable: (mirrorSource) => {
         this.mirrors.markUnreachable(mirrorSource);
@@ -535,15 +541,26 @@ export class QueueService {
    * UTC day once Anna's says the key has nothing left - so a day's allowance
    * running out costs one request, not one per failure.
    */
+  /** Whether Anna's Archive can be asked right now: a key, and allowance left today. */
+  private annasAvailable(): boolean {
+    return Boolean(this.annasKey) && Date.now() >= this.annasPausedUntil;
+  }
+
   private async fetchFromAnnas(
     item: QueueItem,
     lane: DownloadLane,
     shared: Omit<Parameters<typeof downloadFromURL>[0], "downloadURL">,
     laneNote: string
   ): Promise<boolean> {
-    if (!this.annasKey || !item.md5 || Date.now() < this.annasPausedUntil) {
+    if (!this.annasAvailable() || !item.md5) {
       return false;
     }
+
+    this.change(item.id, {
+      status: "retrying",
+      error: `${laneNote}LibGen could not deliver it - fetching from Anna's Archive`,
+      progress: 0,
+    });
 
     const link = await fetchAnnasDownloadURL(item.md5, this.annasKey, this.annasDomain, lane.proxy);
     if (link.status === "error") {

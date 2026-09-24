@@ -184,3 +184,9 @@ export const DEFER_SCHEDULE_MS = [30 * 60_000, 2 * 3_600_000, 6 * 3_600_000, 12 
 // article means one article every 20 seconds at most.
 export const WILEY_TDM_URL = "https://api.wiley.com/onlinelibrary/tdm/v1/articles/";
 export const WILEY_TDM_MIN_INTERVAL_MS = 10_000;
+
+// Attempts LibGen gets while an Anna's Archive allowance is left, before the
+// same file is fetched from Anna's fast servers instead. LibGen's own server
+// drops transfers and restarts them from zero, so the full six attempts across
+// four mirrors mostly spent the better part of an hour failing first.
+export const QUICK_TRY_ATTEMPTS = 2;

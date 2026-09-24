@@ -894,6 +894,64 @@ describe("Anna's Archive as a second way to a LibGen file", () => {
     expect(apiCalls).toBe(1);
   });
 
+  it("goes straight to Anna's when LibGen says it is busy, rather than waiting", async () => {
+    let libgenFileRequests = 0;
+    mockFetch(async (input) => {
+      const url = input.toString();
+      if (url.includes("/ads.php")) {
+        return new Response(detailPage);
+      }
+      if (url.includes("/dyn/api/fast_download.json")) {
+        return Response.json({ download_url: "https://fast.example/file.epub" });
+      }
+      if (url === "https://fast.example/file.epub") {
+        return fileResponse();
+      }
+      libgenFileRequests += 1;
+      return new Response("busy", { status: 503 });
+    });
+
+    const queue = createQueue({ annasKey: "secret", annasDomain: "annas.example" });
+    const idle = waitForIdle(queue);
+    const item = queue.add({ md5: MD5 });
+    await idle;
+
+    expect(store.get(item.id)).toMatchObject({
+      status: "downloaded",
+      mirror: "https://annas.example/",
+    });
+    // One refusal, not a minute's wait and another go.
+    expect(libgenFileRequests).toBe(1);
+  });
+
+  it("gives LibGen only a short try while Anna's is there to fall back on", async () => {
+    let libgenFileRequests = 0;
+    mockFetch(async (input) => {
+      const url = input.toString();
+      if (url.includes("/ads.php")) {
+        return new Response(detailPage);
+      }
+      if (url.includes("/dyn/api/fast_download.json")) {
+        return Response.json({ download_url: "https://fast.example/file.epub" });
+      }
+      if (url === "https://fast.example/file.epub") {
+        return fileResponse();
+      }
+      libgenFileRequests += 1;
+      return new Response("gateway", { status: 502 });
+    });
+    const utilities = await import("../src/utilities");
+    mock.module("../src/utilities", () => ({ ...utilities, delay: async () => {} }));
+
+    const queue = createQueue({ annasKey: "secret", annasDomain: "annas.example" });
+    const idle = waitForIdle(queue);
+    const item = queue.add({ md5: MD5 });
+    await idle;
+
+    expect(store.get(item.id)?.status).toBe("downloaded");
+    expect(libgenFileRequests).toBe(2);
+  });
+
   it("is off without a key", async () => {
     const asked: string[] = [];
     mockFetch(async (input) => {

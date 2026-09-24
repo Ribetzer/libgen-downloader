@@ -22,6 +22,7 @@ import {
   DOWNLOAD_TOTAL_BUDGET_MS,
   LIBGEN_BUSY_COOLDOWN_MS,
   MAX_DOWNLOAD_MIRRORS,
+  QUICK_TRY_ATTEMPTS,
   MAX_PATH_LENGTH,
   MAX_RETRY_AFTER_MS,
   MIN_FILE_NAME_LENGTH,
@@ -336,6 +337,13 @@ interface TransferArguments {
    * page treated as an instruction to wait, not a failure.
    */
   libgenLane?: string;
+  /** Attempts before giving up; DOWNLOAD_ATTEMPT_COUNT when not given. */
+  attemptCount?: number;
+  /**
+   * Give up at once when the server says it is busy or over its limit, rather
+   * than waiting it out - for a caller with somewhere better to go.
+   */
+  stopWhenLimited?: boolean;
   /**
    * Extra fetch options the host requires - Sci-Hub's certificate pin is the
    * only user. Spread under the headers, so `Range` is never displaced.
@@ -433,6 +441,8 @@ const transferFile = async ({
   headers: extraHeaders,
   requestInit,
   libgenLane,
+  attemptCount = DOWNLOAD_ATTEMPT_COUNT,
+  stopWhenLimited = false,
   throttleBackoffMs,
   backoffMs,
   deadline,
@@ -454,7 +464,7 @@ const transferFile = async ({
   // Whether the last failure said the file itself is gone (a 404, say).
   let permanent = false;
 
-  for (let index = 0; index < DOWNLOAD_ATTEMPT_COUNT; index++) {
+  for (let index = 0; index < attemptCount; index++) {
     let limited = false;
     // Set once the server has answered: whether it honoured the Range and
     // resumed. Only a real resume makes a dropped attempt progress.
@@ -586,6 +596,10 @@ const transferFile = async ({
       // waits the window out rather than failing for being in a busy queue.
       // The wait itself is `paceLibgenFile`'s, at the top of the next pass -
       // the cooldown is shared, and sleeping here as well would wait twice.
+      if (limited && stopWhenLimited) {
+        break;
+      }
+
       if (limited) {
         limitedMs += waitMs;
         index -= 1;
@@ -620,7 +634,7 @@ const transferFile = async ({
         continue;
       }
 
-      if (index + 1 === DOWNLOAD_ATTEMPT_COUNT) {
+      if (index + 1 === attemptCount) {
         break;
       }
 
@@ -642,7 +656,7 @@ const transferFile = async ({
         }
         onRetry(
           `${lastError} - ${describeProgress(attemptBytes, attemptTotal)}${restartNote}, ` +
-            `retrying in ${waitSeconds}s (${index + 2}/${DOWNLOAD_ATTEMPT_COUNT})`
+            `retrying in ${waitSeconds}s (${index + 2}/${attemptCount})`
         );
       }
 
@@ -781,6 +795,11 @@ interface DownloadByMD5Arguments {
   md5: string;
   /** Which lane to use; the process's own connection when not given. */
   lane?: DownloadLane;
+  /**
+   * A shorter try, for a caller with a second route to the same file (Anna's
+   * Archive): fewer attempts, one mirror, and no waiting out a busy server.
+   */
+  quickTry?: boolean;
   candidates: MirrorCandidate[];
   outputDirectory: string;
   preferredTitle?: string;
@@ -812,6 +831,7 @@ export type DownloadByMD5Outcome =
 export const downloadByMD5 = async ({
   md5,
   lane,
+  quickTry = false,
   candidates,
   outputDirectory,
   preferredTitle,
@@ -833,7 +853,16 @@ export const downloadByMD5 = async ({
   let lastTransferTransient = true;
   const deadline = Date.now() + totalBudgetMs;
 
-  for (let mirrorIndex = 0; mirrorIndex < MAX_DOWNLOAD_MIRRORS; mirrorIndex++) {
+  // Every mirror's file comes from the same CDN, so on a quick try a second
+  // mirror is just a second go at the same overloaded server.
+  let maxMirrors = MAX_DOWNLOAD_MIRRORS;
+  let attemptCount = DOWNLOAD_ATTEMPT_COUNT;
+  if (quickTry) {
+    maxMirrors = 1;
+    attemptCount = QUICK_TRY_ATTEMPTS;
+  }
+
+  for (let mirrorIndex = 0; mirrorIndex < maxMirrors; mirrorIndex++) {
     // Checked before resolving as well as before transferring: walking a dead
     // mirror's detail pages is not free either.
     if (mirrorIndex > 0 && Date.now() >= deadline) {
@@ -866,6 +895,8 @@ export const downloadByMD5 = async ({
     const transferOutcome = await transferFile({
       downloadURL: resolveResult.downloadURL,
       libgenLane: lane?.key ?? DIRECT_LANE,
+      attemptCount,
+      stopWhenLimited: quickTry,
       requestInit: { proxy: lane?.proxy },
       outputDirectory,
       preferredTitle,

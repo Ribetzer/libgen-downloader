@@ -274,6 +274,13 @@ connection.
   Anna's before deferring or failing. A key reported invalid or used up stops
   the fallback until the next UTC day. It works by MD5 only, so it can't find
   papers LibGen has never held; SciDB didn't have the missing ones either.
+  While the allowance lasts (100 a day on the Lucky Librarian tier), LibGen
+  gets a **quick try** (`downloadByMD5({ quickTry })`): `QUICK_TRY_ATTEMPTS`
+  (2) attempts on one mirror, and a busy or limit answer hands the file
+  straight to Anna's instead of being waited out. At full patience, the
+  fallback only ran after LibGen had spent most of an hour failing, so the
+  allowance went unused while large files crawled. Once it's used up, full
+  patience returns until the next UTC day.
 - **Any page served where a file should be** fails a URL download ("the site
   sent a page instead of the file: <title>") instead of being saved as a .pdf.
 - **Sci-Hub's certificate pin is a fallback:** in 2026 its page hosts moved to
