@@ -84,7 +84,55 @@ export const scihubRequestInit = (): RequestInit =>
   }) as RequestInit;
 
 /**
- * Whether a URL points at a Sci-Hub *page* host, and so needs the pin.
+ * Page hosts that have been seen serving the self-signed certificate. The pin
+ * is a fallback, not the default: by September 2026 both page hosts had moved
+ * to ordinary Let's Encrypt certificates, and the pin - which makes the one
+ * self-signed certificate the *only* trust anchor - then rejected every
+ * request with "unable to get local issuer certificate". So a host is asked
+ * with normal verification first and pinned only once that fails on its
+ * certificate, and remembered, so its downloads get the pin too.
+ */
+const pinnedHosts = new Set<string>();
+
+const isCertificateError = (error: unknown): boolean =>
+  /certificate|self[ -]signed|issuer|CERT_|UNABLE_TO/i.test(
+    String((error as Error)?.message ?? error)
+  );
+
+/**
+ * Fetch a Sci-Hub page: normal verification, falling back to the pinned
+ * certificate for a host whose certificate normal verification rejects.
+ */
+export const fetchSciHub = async (url: string, proxy?: string): Promise<Response> => {
+  const host = new URL(url).hostname;
+  const pinned = { ...scihubRequestInit(), proxy } as RequestInit;
+  if (pinnedHosts.has(host)) {
+    return fetch(url, pinned);
+  }
+
+  try {
+    return await fetch(url, { proxy });
+  } catch (error: unknown) {
+    if (!isCertificateError(error)) {
+      throw error;
+    }
+
+    const response = await fetch(url, pinned);
+    pinnedHosts.add(host);
+    return response;
+  }
+};
+
+/** Whether a host has needed the pinned certificate; see `fetchSciHub`. */
+export const sciHubHostNeedsPin = (host: string): boolean => pinnedHosts.has(host);
+
+/** For tests. */
+export const resetSciHubPins = (): void => {
+  pinnedHosts.clear();
+};
+
+/**
+ * Whether a URL points at a Sci-Hub *page* host, and so may need the pin.
  *
  * The PDF link comes in two spellings and they differ in exactly this way:
  * `//sci-hub.red/storage/…` is a separate storage host with an ordinary Let's
@@ -215,9 +263,15 @@ const buildResult = (doi: string, host: string, page: SciHubPage & { status: "fo
  * challenge page is a direct instruction to slow down, so it sets a cooldown
  * rather than being retried at the usual interval - which is what turns a
  * throttled batch into a page of false "not found" answers.
+ *
+ * Kept per way out - the proxy a request goes through, or the process's own
+ * connection - because the captcha is per IP: one lane being challenged says
+ * nothing about the others, and holding them all back wasted every lane but
+ * the one Sci-Hub was annoyed with.
  */
-let lastRequestAt = 0;
-let cooldownUntil = 0;
+const DIRECT = "direct";
+const lastRequestAt = new Map<string, number>();
+const cooldownUntil = new Map<string, number>();
 
 /** How long a request arriving now has to wait: the interval or the cooldown. */
 export const scihubWaitMs = (
@@ -226,15 +280,19 @@ export const scihubWaitMs = (
   challengedUntil: number
 ): number => Math.max(0, previousRequestAt + SCIHUB_MIN_INTERVAL_MS - now, challengedUntil - now);
 
-/** When the current captcha cooldown expires; 0 when there is none. */
-export const scihubCooldownUntil = (): number => cooldownUntil;
+/** When the current captcha cooldown on this way out expires; 0 when there is none. */
+export const scihubCooldownUntil = (proxy?: string): number =>
+  cooldownUntil.get(proxy ?? DIRECT) ?? 0;
 
-const pace = async (): Promise<void> => {
+const pace = async (proxy?: string): Promise<void> => {
+  const key = proxy ?? DIRECT;
   const now = Date.now();
-  const waitMs = scihubWaitMs(now, lastRequestAt, cooldownUntil);
+  const previous = lastRequestAt.get(key) ?? 0;
+  const challengedUntil = cooldownUntil.get(key) ?? 0;
+  const waitMs = scihubWaitMs(now, previous, challengedUntil);
   // Claim the slot before waiting, so callers arriving together space out
   // instead of all reading the same stale timestamp and going out at once.
-  lastRequestAt = Math.max(now, lastRequestAt + SCIHUB_MIN_INTERVAL_MS, cooldownUntil);
+  lastRequestAt.set(key, Math.max(now, previous + SCIHUB_MIN_INTERVAL_MS, challengedUntil));
 
   if (waitMs > 0) {
     await delay(waitMs);
@@ -243,8 +301,8 @@ const pace = async (): Promise<void> => {
 
 /** For tests, which must not sit out a real interval or a real minute. */
 export const resetScihubPacing = (): void => {
-  lastRequestAt = 0;
-  cooldownUntil = 0;
+  lastRequestAt.clear();
+  cooldownUntil.clear();
 };
 
 export const scihubSource: Source = {
@@ -252,7 +310,7 @@ export const scihubSource: Source = {
   label: "Sci-Hub",
   // A DOI and nothing else. There is no text index to search.
   handles: (query) => query.kind === "doi",
-  async search(parsedQuery) {
+  async search(parsedQuery, _page, context) {
     if (parsedQuery.kind !== "doi") {
       return { status: "ok", items: [] };
     }
@@ -265,14 +323,14 @@ export const scihubSource: Source = {
     // when the first was challenged or unreachable, so it is worth at most two
     // requests; it is a queue draining ninety-odd DOIs that trips the captcha,
     // and spacing there must not make a single interactive lookup sit and wait.
-    await pace();
+    await pace(context.proxy);
 
     for (const host of hosts) {
       let response: Response;
       try {
         // One request per host per search. The captcha is rate-triggered, so
         // hammering it is what causes the thing being worked around.
-        response = await fetch(`https://${host}/${parsedQuery.doi}`, scihubRequestInit());
+        response = await fetchSciHub(`https://${host}/${parsedQuery.doi}`, context.proxy);
       } catch (error: unknown) {
         failures.push(`${host}: ${(error as Error)?.message || "unreachable"}`);
         continue;
@@ -289,7 +347,7 @@ export const scihubSource: Source = {
         // Taken at the page's own word. Every host is behind the same rate
         // limiter, so this holds the next caller off all of them, not just
         // the one that answered.
-        cooldownUntil = Date.now() + SCIHUB_CHALLENGE_COOLDOWN_MS;
+        cooldownUntil.set(context.proxy ?? DIRECT, Date.now() + SCIHUB_CHALLENGE_COOLDOWN_MS);
         continue;
       }
 

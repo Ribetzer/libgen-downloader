@@ -7,13 +7,19 @@ import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 import type { DownloadResult } from "../models/download-result";
 import { Mirror } from "./config";
 import { buildDownloadFileName, MAX_FILE_NAME_LENGTH, withCollisionSuffix } from "./filename";
-import { noteLibgenFileLimit, paceLibgenFile, readFileLimit } from "./libgen-file-pacing";
+import {
+  DIRECT_LANE,
+  noteLibgenFileLimit,
+  paceLibgenFile,
+  readFileLimit,
+} from "./libgen-file-pacing";
 import { MirrorCandidate, resolveDownloadURL, ResolveResult } from "./resolve";
 import {
   DOWNLOAD_ATTEMPT_COUNT,
   DOWNLOAD_BACKOFF_MS,
   DOWNLOAD_STALL_TIMEOUT_MS,
   DOWNLOAD_TOTAL_BUDGET_MS,
+  LIBGEN_BUSY_COOLDOWN_MS,
   MAX_DOWNLOAD_MIRRORS,
   MAX_PATH_LENGTH,
   MAX_RETRY_AFTER_MS,
@@ -324,15 +330,16 @@ interface TransferArguments {
   /** Extra request headers, for a source whose host wants one. */
   headers?: Record<string, string>;
   /**
-   * A LibGen file: spaced to stay under the CDN's per-IP file limit, and its
-   * "too many files" page treated as an instruction to wait, not a failure.
+   * Set for a LibGen file, naming the lane it goes out on: spaced to stay
+   * under the CDN's per-IP file limit for that lane, and its "too many files"
+   * page treated as an instruction to wait, not a failure.
    */
-  libgenFile?: boolean;
+  libgenLane?: string;
   /**
    * Extra fetch options the host requires - Sci-Hub's certificate pin is the
    * only user. Spread under the headers, so `Range` is never displaced.
    */
-  requestInit?: RequestInit;
+  requestInit?: BunFetchRequestInit;
   throttleBackoffMs: number[];
   /**
    * Spacing between restarts, indexed by attempt and clamped at the last
@@ -410,7 +417,7 @@ const transferFile = async ({
   preferredDOI,
   headers: extraHeaders,
   requestInit,
-  libgenFile,
+  libgenLane,
   throttleBackoffMs,
   backoffMs,
   deadline,
@@ -425,9 +432,14 @@ const transferFile = async ({
   // count: the limit is per IP, and a VPN exit shares it with strangers, so an
   // item can be refused for an hour through no fault of its own.
   let limitedMs = 0;
+  // The most of the file ever held on disk. An attempt that pushes it further
+  // made real progress, which the attempt count and the budget should not
+  // charge for; only attempts that get nowhere use them up.
+  let heldHighWater = 0;
 
   for (let index = 0; index < DOWNLOAD_ATTEMPT_COUNT; index++) {
     let limited = false;
+    const attemptStartedAt = Date.now();
     let waitMs = backoffMs[Math.min(index, backoffMs.length - 1)];
     let attemptBytes = 0;
     let attemptTotal = 0;
@@ -435,18 +447,17 @@ const transferFile = async ({
     try {
       // Ask to continue where the last attempt stopped. Whether that happens
       // is the server's call - a 206 resumes, anything else restarts - which
-      // is exactly what a browser's "retry" does. Measured against libgen's
-      // CDN this currently comes back 200, i.e. no resume; the request costs
-      // one header, and the moment any mirror or node does support it the
-      // saving is the whole partial file.
+      // is exactly what a browser's "retry" does. LibGen's CDN answered 200
+      // (no resume) when this was written and 206 (resume) by September 2026;
+      // the request costs one header either way.
       const resumeFromBytes = await partFileSize(partPath);
       const headers: Record<string, string> = { ...extraHeaders };
       if (resumeFromBytes > 0) {
         headers.Range = `bytes=${resumeFromBytes}-`;
       }
 
-      if (libgenFile) {
-        await paceLibgenFile();
+      if (libgenLane) {
+        await paceLibgenFile(libgenLane);
       }
 
       const downloadStream = await fetch(downloadURL, { ...requestInit, headers });
@@ -455,10 +466,10 @@ const transferFile = async ({
         // LibGen's CDN reports its per-IP file limit as a plain HTTP 500 with
         // an explanatory page, so the status alone reads as a broken server.
         // Retrying that at the ordinary backoff only adds to the count.
-        if (libgenFile) {
+        if (libgenLane) {
           const limit = readFileLimit(await downloadStream.text().catch(() => ""));
           if (limit) {
-            noteLibgenFileLimit(limit.windowMs);
+            noteLibgenFileLimit(limit.windowMs, libgenLane);
             waitMs = limit.windowMs;
             limited = true;
             let quota = `${limit.windowMs / 1000}s`;
@@ -467,6 +478,18 @@ const transferFile = async ({
             }
             throw new Error(`LibGen's download limit reached (${quota})`);
           }
+        }
+
+        // A mirror too busy for this address says 503 or 429. Through a lane,
+        // that is the lane's problem like the file limit is: the lane stands
+        // back and the item waits, rather than spending its attempts on it.
+        if (libgenLane && THROTTLE_STATUS_CODES.has(downloadStream.status)) {
+          const busyMs =
+            readRetryAfterMs(downloadStream.headers.get("retry-after")) ?? LIBGEN_BUSY_COOLDOWN_MS;
+          noteLibgenFileLimit(busyMs, libgenLane);
+          waitMs = busyMs;
+          limited = true;
+          throw new Error(`LibGen is busy (HTTP ${downloadStream.status})`);
         }
 
         if (THROTTLE_STATUS_CODES.has(downloadStream.status)) {
@@ -512,6 +535,25 @@ const transferFile = async ({
         onRetry?.(
           `${lastError} - waiting ${Math.round(waitMs / 1000)}s for it to clear, not counted as an attempt`
         );
+        continue;
+      }
+
+      // The connection dropped, but the file on disk is further along than it
+      // has ever been: a slow link that keeps being cut, not a dead one. With
+      // the CDN resuming, each such attempt carries on from where the last
+      // stopped, so it is neither an attempt nor time charged to the budget -
+      // otherwise a large file on a flaky link ran out of both at a third done.
+      const heldBytes = await partFileSize(partPath);
+      if (heldBytes > heldHighWater) {
+        heldHighWater = heldBytes;
+        limitedMs += Date.now() - attemptStartedAt;
+        index -= 1;
+        const resumeWaitMs = backoffMs[0];
+        onRetry?.(
+          `${lastError} - ${describeProgress(attemptBytes, attemptTotal)}, kept ${(heldBytes / 1e6).toFixed(1)} MB, ` +
+            `resuming in ${Math.round(resumeWaitMs / 1000)}s (progress made, not counted as an attempt)`
+        );
+        await delay(resumeWaitMs);
         continue;
       }
 
@@ -579,7 +621,7 @@ interface DownloadFromURLArguments {
   preferredTitle?: string;
   preferredDOI?: string;
   headers?: Record<string, string>;
-  requestInit?: RequestInit;
+  requestInit?: BunFetchRequestInit;
   onStart: (filename: string, total: number) => void;
   onProgress: (filename: string, receivedBytes: number, total: number) => void;
   onRetry?: (message: string) => void;
@@ -646,8 +688,23 @@ export const downloadFromURL = async ({
   return { status: "failed", reason: `download failed: ${outcome.reason}` };
 };
 
+/**
+ * One way out to LibGen: the connection the process already has, or another
+ * VPN connection reached through its HTTP proxy. The CDN limits files per IP,
+ * so each lane is paced on its own, and a download's detail page and file go
+ * out on the same lane - the page's key is issued to the address that asked.
+ */
+export interface DownloadLane {
+  /** Names the lane for pacing and in messages. */
+  key: string;
+  /** Absent for the process's own connection. */
+  proxy?: string;
+}
+
 interface DownloadByMD5Arguments {
   md5: string;
+  /** Which lane to use; the process's own connection when not given. */
+  lane?: DownloadLane;
   candidates: MirrorCandidate[];
   outputDirectory: string;
   preferredTitle?: string;
@@ -666,7 +723,9 @@ interface DownloadByMD5Arguments {
 
 export type DownloadByMD5Outcome =
   | { status: "downloaded"; result: DownloadResult; mirror: Mirror }
-  | { status: "failed"; reason: string };
+  // `unreachable`: no mirror answered at all, which says nothing about the
+  // file - through a proxy lane, it is usually the lane.
+  | { status: "failed"; reason: string; unreachable?: boolean };
 
 /**
  * Resolves an MD5 against the candidate mirrors and downloads it, restarting a
@@ -675,6 +734,7 @@ export type DownloadByMD5Outcome =
  */
 export const downloadByMD5 = async ({
   md5,
+  lane,
   candidates,
   outputDirectory,
   preferredTitle,
@@ -707,6 +767,7 @@ export const downloadByMD5 = async ({
       candidates: remainingCandidates,
       onMirrorTry,
       onMirrorUnreachable,
+      proxy: lane?.proxy,
     });
 
     if (resolveResult.status !== "resolved") {
@@ -714,12 +775,17 @@ export const downloadByMD5 = async ({
         break;
       }
 
-      return { status: "failed", reason: describeResolveFailure(resolveResult) };
+      return {
+        status: "failed",
+        reason: describeResolveFailure(resolveResult),
+        unreachable: resolveResult.status === "unreachable",
+      };
     }
 
     const transferOutcome = await transferFile({
       downloadURL: resolveResult.downloadURL,
-      libgenFile: true,
+      libgenLane: lane?.key ?? DIRECT_LANE,
+      requestInit: { proxy: lane?.proxy },
       outputDirectory,
       preferredTitle,
       preferredDOI,

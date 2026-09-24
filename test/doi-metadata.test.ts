@@ -6,6 +6,7 @@ import {
   isBatchableDOI,
   parseCrossrefWorks,
   parseCSL,
+  stripMarkup,
 } from "../src/api/data/doi-metadata";
 import { ItemStore, QueueItem } from "../src/server/database";
 import { MetadataService } from "../src/server/metadata-service";
@@ -42,6 +43,24 @@ describe("parseCrossrefWorks", () => {
     const found = parseCrossrefWorks(fixture("crossref-works-batch.json"));
 
     expect(found.get("10.1109/tg.2024.3497601")?.title).toBe("Will GPT-4 Run DOOM?");
+  });
+
+  it("does not read pretty-printed markup's line breaks as spaces", () => {
+    // Crossref's own title for 10.1111/cgf.14084, exactly as served.
+    const indent = "\n                    ";
+    const raw = [
+      "C",
+      "<scp>onsistent</scp>",
+      "Z",
+      "<scp>oom</scp>",
+      "O",
+      "<scp>ut</scp>",
+      ": Efficient Spectral Map Synchronization",
+    ].join(indent);
+
+    expect(stripMarkup(raw)).toBe("ConsistentZoomOut: Efficient Spectral Map Synchronization");
+    expect(stripMarkup("Will GPT-4 Run <i>DOOM</i>?")).toBe("Will GPT-4 Run DOOM?");
+    expect(stripMarkup("Two  words\nwrapped")).toBe("Two words wrapped");
   });
 
   it("tolerates a body that is not a works list", () => {

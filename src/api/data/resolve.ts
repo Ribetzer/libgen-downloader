@@ -21,6 +21,8 @@ interface ResolveDownloadURLArguments {
   candidates: MirrorCandidate[];
   onMirrorTry?: (mirrorSource: string) => void;
   onMirrorUnreachable?: (mirrorSource: string) => void;
+  /** Fetch the detail pages through this proxy - the lane the file will use. */
+  proxy?: string;
 }
 
 /**
@@ -32,8 +34,16 @@ export async function resolveDownloadURL({
   md5,
   candidates,
   onMirrorTry,
-  onMirrorUnreachable,
+  onMirrorUnreachable: reportUnreachable,
+  proxy,
 }: ResolveDownloadURLArguments): Promise<ResolveResult> {
+  // A mirror that fails through a proxy may be failing because of the proxy.
+  // Marking it unreachable would take it away from every lane, so only a
+  // direct request is trusted to say so.
+  let onMirrorUnreachable = reportUnreachable;
+  if (proxy) {
+    onMirrorUnreachable = undefined;
+  }
   const checkedMirrors: string[] = [];
   let reachedAnyMirror = false;
 
@@ -47,7 +57,7 @@ export async function resolveDownloadURL({
 
     const detailPageURL = candidate.adapter.getDetailPageURL(md5);
     const detailPageResult = await attempt(
-      () => getDocument(detailPageURL),
+      () => getDocument(detailPageURL, { proxy }),
       undefined,
       undefined,
       undefined,

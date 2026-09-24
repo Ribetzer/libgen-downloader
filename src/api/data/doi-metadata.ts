@@ -25,9 +25,17 @@ export interface DOIMetadata {
 const CROSSREF_WORKS_URL = "https://api.crossref.org/works";
 const CSL_MEDIA_TYPE = "application/vnd.citationstyles.csl+json";
 
-/** Crossref titles carry JATS markup: `Will GPT-4 Run <i>DOOM</i>?`. */
-const stripMarkup = (value: string): string =>
+/**
+ * Crossref titles carry JATS markup: `Will GPT-4 Run <i>DOOM</i>?`. Some come
+ * pretty-printed, a line break and indent around every tag -
+ * `C⏎    <scp>onsistent</scp>⏎    Z⏎    <scp>oom</scp>` for "ConsistentZoomOut" -
+ * so whitespace that breaks a line beside a tag is layout, not a space in the
+ * title, and collapsing it to one space read as "C onsistent Z oom O ut".
+ */
+export const stripMarkup = (value: string): string =>
   value
+    .replaceAll(/\s*\n\s*(<[^>]+>)/g, "$1")
+    .replaceAll(/(<[^>]+>)\s*\n\s*/g, "$1")
     .replaceAll(/<[^>]+>/g, "")
     .replaceAll(/\s+/g, " ")
     .trim();

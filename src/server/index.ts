@@ -4,10 +4,11 @@ import { parseIdentifierList } from "../api/data/file";
 import { extractMD5 } from "../api/data/md5";
 import { CorpusService } from "./corpus-service";
 import { ItemStore, NewQueueItem, QueueItem } from "./database";
+import { LaneService, parseProxyList } from "./lane-service";
 import { MetadataService } from "./metadata-service";
 import { MirrorService } from "./mirror-service";
 import { QueueService } from "./queue-service";
-import { runSearch } from "./search-service";
+import { runSearch, SOURCES } from "./search-service";
 import { StorageService } from "./storage-service";
 // Straight from package.json: importing ../index would run the CLI entry point.
 import packageJson from "../../package.json";
@@ -30,8 +31,20 @@ const CORPUS_URL = process.env.LIBGEN_CORPUS_URL || "";
 // Sent to Crossref as a contact in the User-Agent, which moves the title and
 // author lookups for listed DOIs into its faster "polite" pool. Optional.
 const CONTACT_EMAIL = process.env.LIBGEN_CONTACT_EMAIL || "";
-// How many items download at once; see QUEUE_CONCURRENCY.
-const CONCURRENCY = Number(process.env.LIBGEN_CONCURRENCY) || QUEUE_CONCURRENCY;
+// Other VPN connections to send LibGen downloads through, each an exit IP with
+// its own file allowance: `DE-6=http://172.30.0.11:8888,FI-37=…`. The
+// process's own connection is always a lane too, named by LIBGEN_LANE_NAME.
+const PROXY_LANES = parseProxyList(process.env.LIBGEN_PROXIES || "");
+const MAIN_LANE_NAME = process.env.LIBGEN_LANE_NAME || "main";
+const LANE_CHECK_MS = 60_000;
+// How many items download at once; see QUEUE_CONCURRENCY. With extra lanes,
+// two per lane unless set: one connection per exit IP leaves most of each
+// allowance unused, and the pacer keeps two well inside it.
+let defaultConcurrency = QUEUE_CONCURRENCY;
+if (PROXY_LANES.length > 0) {
+  defaultConcurrency = (PROXY_LANES.length + 1) * 2;
+}
+const CONCURRENCY = Number(process.env.LIBGEN_CONCURRENCY) || defaultConcurrency;
 const MIRROR_REFRESH_MS = 60 * 60 * 1000;
 const MIRROR_RETRY_MS = 30 * 1000;
 const HISTORY_LIMIT = 500;
@@ -79,16 +92,23 @@ const notifyFinished = (item: QueueItem) => {
   });
 };
 
+const lanes = new LaneService([{ key: MAIN_LANE_NAME }, ...PROXY_LANES]);
+
 const queue = new QueueService({
   store,
+  lanes: lanes.lanes,
+  isLaneReady: lanes.isReady,
+  onLaneTrouble: lanes.bench,
   mirrors,
   outputDirectory: OUTPUT_DIRECTORY,
   storage,
   concurrency: CONCURRENCY,
   onFinished: notifyFinished,
   // The same lookup `POST /api/queue` does for a `{"doi": …}` body, run by the
-  // queue itself for a DOI that arrived in an uploaded list.
-  resolveDOI: (doi) => resolveRequestedItem({ doi }),
+  // queue itself for a DOI that arrived in an uploaded list - on the worker's
+  // lane, so Sci-Hub's captcha, which is per IP, is spread across every VPN
+  // connection instead of all landing on the main one.
+  resolveDOI: (doi, lane) => resolveRequestedItem({ doi }, lane?.proxy),
 });
 
 const metadata = new MetadataService({
@@ -154,6 +174,10 @@ if (startedWithMirror && startedWithVolume.ready) {
   firstDelayMs = MIRROR_REFRESH_MS;
 }
 scheduleMirrorRefresh(firstDelayMs);
+
+// Proxied lanes stay out of rotation until they have answered once.
+await lanes.probe();
+lanes.watch(LANE_CHECK_MS, () => queue.start());
 
 queue.start();
 // Anything a previous run queued but never finished looking up.
@@ -238,7 +262,8 @@ interface QueueRequestItem {
  * `{"doi": …}` body for the paired RAG corpus.
  */
 async function resolveRequestedItem(
-  item: QueueRequestItem
+  item: QueueRequestItem,
+  proxy?: string
 ): Promise<NewQueueItem | { reason: string }> {
   const requestedDOI = (item.doi || "").trim();
   const requestedURL = (item.url || "").trim();
@@ -263,7 +288,7 @@ async function resolveRequestedItem(
     return { reason: "no usable md5, url or doi" };
   }
 
-  const outcome = await runSearch(mirrors, requestedDOI, 1);
+  const outcome = await runSearch(mirrors, requestedDOI, 1, SOURCES, proxy);
   if (outcome.status === "error") {
     return { reason: outcome.message };
   }
@@ -273,6 +298,14 @@ async function resolveRequestedItem(
   // has one, and Sci-Hub's copy when it does not.
   const [first] = outcome.items;
   if (!first) {
+    // "No file anywhere" only when every source actually answered. A source
+    // that could not be asked - Sci-Hub wanting a captcha, most often - may
+    // well hold it, and saying otherwise sends the paper to be given up on.
+    if (outcome.notes.length > 0) {
+      const unanswered = outcome.notes.map((note) => note.message).join("; ");
+      return { reason: `nothing found yet for ${requestedDOI} - ${unanswered}; retry later` };
+    }
+
     return { reason: `no file on any source for ${requestedDOI}` };
   }
 
@@ -391,6 +424,8 @@ const handleRequest = async (request: Request): Promise<Response> => {
       preferredMirror: state.preferredMirrorSource || "",
       unreachableMirrors: state.unreachableMirrorSources,
       lastRefreshedAt: state.lastRefreshedAt || "",
+      lanes: lanes.getStates(),
+      concurrency: CONCURRENCY,
       error: state.lastError || "",
     });
   }

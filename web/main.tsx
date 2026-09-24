@@ -12,6 +12,9 @@ interface ServerConfig {
   unreachableMirrors: string[];
   lastRefreshedAt: string;
   error: string;
+  /** Ways out to LibGen, one per VPN connection. */
+  lanes?: { key: string; proxied: boolean; ready: boolean; ip: string }[];
+  concurrency?: number;
 }
 
 interface QueueItem {
@@ -282,6 +285,13 @@ const App = () => {
     void loadHistory();
   }, [loadConfig, loadHistory]);
 
+  // Lanes come and go with their VPN connections, so the header re-reads the
+  // config on the same beat the server re-checks them.
+  useEffect(() => {
+    const timer = setInterval(() => void loadConfig(), 60_000);
+    return () => clearInterval(timer);
+  }, [loadConfig]);
+
   // One stream carries the snapshot and every later change, so the queue reads
   // live without polling.
   useEffect(() => {
@@ -514,6 +524,17 @@ const App = () => {
           <span className={`status-dot ${config && !config.storageReady ? "bad" : "ok"}`} />
           downloads to <strong>{config?.outputDirectory || "…"}</strong>
         </span>
+        {config?.lanes && config.lanes.length > 1 && (
+          <span className="meta lanes" title={`${config.concurrency ?? "?"} downloads at once`}>
+            lanes
+            {config.lanes.map((lane) => (
+              <span key={lane.key} className="lane" title={lane.ip || "not answering"}>
+                <span className={`status-dot ${lane.ready ? "ok" : "bad"}`} />
+                {lane.key}
+              </span>
+            ))}
+          </span>
+        )}
         <span className="meta">v{config?.version || "…"}</span>
       </header>
 

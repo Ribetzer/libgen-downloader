@@ -414,3 +414,17 @@ td .chip-source {
 .status-dot.bad {
   background: var(--red);
 }
+
+/* One VPN connection per lane; hover a name for the exit IP LibGen sees. */
+header .lanes {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+header .lane {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text);
+}

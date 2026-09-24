@@ -3,8 +3,10 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   absolutePDFURL,
+  fetchSciHub,
   getSciHubHosts,
   readSciHubPage,
+  resetSciHubPins,
   resetScihubPacing,
   SCIHUB_CERTIFICATE_FINGERPRINT,
   scihubCooldownUntil,
@@ -266,18 +268,33 @@ describe("scihubSource", () => {
 describe("downloadRequestInit", () => {
   afterEach(() => {
     delete process.env.LIBGEN_SCIHUB_HOSTS;
+    resetSciHubPins();
   });
 
-  it("pins a PDF served from the page host", () => {
-    // The `/storage/…` spelling resolves against the page host, which is
-    // behind DDoS-Guard's self-signed certificate. A plain fetch of it fails
-    // with "self signed certificate" - observed, in the queue, after the
-    // lookup itself had already succeeded.
+  it("pins a PDF from a page host once that host has needed the pin", async () => {
+    // The `/storage/…` spelling resolves against the page host. When that
+    // host is behind DDoS-Guard's self-signed certificate a plain fetch fails
+    // with "self signed certificate", so it gets the pin once seen doing so.
+    const { fetchMock } = mockFetch(async (_input, init) => {
+      if (!(init as { tls?: unknown } | undefined)?.tls) {
+        throw new Error("self signed certificate");
+      }
+      return new Response("ok");
+    });
+    await fetchSciHub("https://sci-hub.st/10.1145/1");
+    fetchMock.mockRestore();
+
     const init = downloadRequestInit(
       "https://sci-hub.st/storage/zero/6684/abc/lorensen1987.pdf"
     ) as { tls?: { ca: string } };
 
     expect(init.tls?.ca).toContain("BEGIN CERTIFICATE");
+  });
+
+  it("leaves a page host with an ordinary certificate alone", () => {
+    // Both page hosts moved to Let's Encrypt in 2026, and pinning the old
+    // self-signed certificate then rejected every request.
+    expect(downloadRequestInit("https://sci-hub.st/storage/a.pdf")).toEqual({});
   });
 
   it("leaves the storage host alone, which has an ordinary certificate", () => {
@@ -295,8 +312,17 @@ describe("downloadRequestInit", () => {
     expect(downloadRequestInit("not a url")).toEqual({});
   });
 
-  it("follows the configured host list, so an override is pinned too", () => {
+  it("follows the configured host list, so an override is pinned too", async () => {
     process.env.LIBGEN_SCIHUB_HOSTS = "sci-hub.example";
+    const { fetchMock } = mockFetch(async (_input, init) => {
+      if (!(init as { tls?: unknown } | undefined)?.tls) {
+        throw new Error("unable to get local issuer certificate");
+      }
+      return new Response("ok");
+    });
+    await fetchSciHub("https://sci-hub.example/10.1145/1");
+    fetchMock.mockRestore();
+
     const init = downloadRequestInit("https://sci-hub.example/storage/a.pdf") as {
       tls?: { ca: string };
     };

@@ -45,7 +45,9 @@ export const runSearch = async (
   mirrors: MirrorService,
   rawQuery: string,
   pageNumber: number,
-  sources: Source[] = SOURCES
+  sources: Source[] = SOURCES,
+  /** A lane's proxy, for the sources whose limits are per IP; see `SourceContext`. */
+  proxy?: string
 ): Promise<SearchOutcome> => {
   const parsedQuery = parseQuery(rawQuery);
 
@@ -53,6 +55,7 @@ export const runSearch = async (
     candidates: mirrors.getCandidates(),
     adapter: mirrors.getAdapter(),
     onMirrorUnreachable: (mirrorSource: string) => mirrors.markUnreachable(mirrorSource),
+    proxy,
   });
 
   if (asked > 0 && notes.length === asked) {

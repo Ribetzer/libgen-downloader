@@ -111,7 +111,10 @@ describe("downloadByMD5", () => {
     });
 
     expect(outcome.status).toBe("downloaded");
-    expect(retryMessages[0]).toContain("HTTP 429 (throttled)");
+    // A busy mirror is the lane's problem, not the file's: it waits, and the
+    // wait is not one of the six attempts.
+    expect(retryMessages[0]).toContain("LibGen is busy (HTTP 429)");
+    expect(retryMessages[0]).toContain("not counted as an attempt");
   });
 
   it("restarts a dropped transfer and reports the retry", async () => {
@@ -228,7 +231,27 @@ describe("downloadByMD5", () => {
     expect(outcome).toEqual({
       status: "failed",
       reason: "not found on any mirror (first.example, second.example)",
+      unreachable: false,
     });
+  });
+
+  it("does not read a refused page as the mirror having no record", async () => {
+    // LibGen's answer to a busy address: a 503 page with no download link.
+    // Parsed as a page, it read as "no record" and failed the item.
+    mockFetch(
+      async () =>
+        new Response("<html><h1>503. Service Temporarily Unavailable</h1></html>", { status: 503 })
+    );
+
+    const outcome = await downloadByMD5({
+      md5: MD5,
+      candidates: [createCandidate("first.example")],
+      ...noopCallbacks,
+      retryDelayMs: 0,
+    });
+
+    expect(outcome).toMatchObject({ status: "failed", unreachable: true });
+    expect(outcome.status === "failed" && outcome.reason).not.toContain("not found");
   });
 
   it("keeps restarting past the old three-attempt limit", async () => {
@@ -395,6 +418,94 @@ describe("downloadByMD5", () => {
     // Nothing to resume from before the first attempt; afterwards it asks.
     expect(rangeHeaders[0]).toBeNull();
     expect(rangeHeaders[1]).toBe("bytes=6-");
+  });
+
+  it("keeps resuming past the attempt limit while each drop leaves more on disk", async () => {
+    // A slow link that keeps being cut: ten drops, each after a little more of
+    // the file, then success. Six attempts and the budget used to end it a
+    // third of the way in; progress each time means it is not failing.
+    const DROPS = 10;
+    let fileRequestCount = 0;
+    let held = 0;
+    mockFetch(async (input) => {
+      if (input.toString().includes("/ads.php")) {
+        return new Response(detailPage("first.example"));
+      }
+
+      fileRequestCount += 1;
+      return new Response("chunk", {
+        status: 206,
+        headers: {
+          "content-disposition": 'attachment; filename="book.epub"',
+          "content-length": "5",
+          "content-range": `bytes ${held}-${held + 4}/1000`,
+        },
+      });
+    });
+    spyOn(fs, "createWriteStream").mockImplementation(
+      () =>
+        new Writable({
+          write(_chunk, _encoding, callback) {
+            if (fileRequestCount <= DROPS) {
+              // Some of it landed before the connection went.
+              held += 5;
+              callback(new Error("The socket connection was closed unexpectedly"));
+              return;
+            }
+
+            callback();
+          },
+        }) as fs.WriteStream
+    );
+    stubPartFileRename();
+    spyOn(fs.promises, "rm").mockImplementation(async () => {});
+    spyOn(fs.promises, "stat").mockImplementation((async (target: fs.PathLike) => {
+      if (String(target).endsWith(".part")) {
+        return { isFile: () => true, size: held } as fs.Stats;
+      }
+
+      throw new Error("ENOENT");
+    }) as unknown as typeof fs.promises.stat);
+    const retryMessages: string[] = [];
+
+    const outcome = await downloadByMD5({
+      md5: MD5,
+      candidates: [createCandidate("first.example")],
+      ...noopCallbacks,
+      onRetry: (message) => retryMessages.push(message),
+      retryDelayMs: 0,
+      // Well short of the time ten attempts take, were they charged for it.
+      totalBudgetMs: 60_000,
+    });
+
+    expect(outcome.status).toBe("downloaded");
+    expect(fileRequestCount).toBe(DROPS + 1);
+    expect(retryMessages.every((message) => message.includes("not counted as an attempt"))).toBe(
+      true
+    );
+  });
+
+  it("still gives up on drops that get no further", async () => {
+    let fileRequestCount = 0;
+    mockFetch(async (input) => {
+      if (input.toString().includes("/ads.php")) {
+        return new Response(detailPage("first.example"));
+      }
+
+      fileRequestCount += 1;
+      return new Response("", { status: 502 });
+    });
+    collectWrites();
+
+    const outcome = await downloadByMD5({
+      md5: MD5,
+      candidates: [createCandidate("first.example")],
+      ...noopCallbacks,
+      retryDelayMs: 0,
+    });
+
+    expect(outcome.status).toBe("failed");
+    expect(fileRequestCount).toBe(6);
   });
 
   it("appends when the server agrees to resume, and counts the bytes already held", async () => {

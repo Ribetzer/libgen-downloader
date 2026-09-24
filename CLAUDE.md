@@ -90,14 +90,16 @@ with either and drops only what has neither; the `withMD5` it replaced
 discarded every arXiv and Sci-Hub row on the way to the browser. The queue
 carries both (`source`, `url` columns) and branches once in `QueueService`.
 
-Sci-Hub's page hosts sit behind DDoS-Guard's **self-signed** certificate (no
-CN, no SAN), so the request supplies that one certificate as its only trust
-anchor and waives the hostname check the certificate cannot satisfy. Both are
-required and it is a real pin, not a bypass — substituting a different
-certificate is rejected. Never `NODE_TLS_REJECT_UNAUTHORIZED`: it is global and
-would disable verification for LibGen and arXiv too. `downloadRequestInit(url)`
-applies the pin by _host_, so the `/storage/…` spelling served from the page
-host is covered while `sci-hub.red` (ordinary Let's Encrypt) is left alone.
+Sci-Hub's page hosts were behind DDoS-Guard's **self-signed** certificate (no
+CN, no SAN), which the code pins: that one certificate as the only trust
+anchor, with the hostname check waived since the certificate can't satisfy
+it. It is a real pin, not a bypass; substituting a different certificate is
+rejected. By September 2026 both page hosts served ordinary Let's Encrypt
+certificates, and the pin then rejected everything. So `fetchSciHub` verifies
+normally first and falls back to the pin only for a host whose certificate
+fails, remembering that host so `downloadRequestInit(url)` pins its downloads
+too. Never `NODE_TLS_REJECT_UNAUTHORIZED`: it is global and would disable
+verification for LibGen and arXiv too.
 
 ### Adapter layer (`src/api/adapters/`)
 
@@ -179,6 +181,49 @@ worker that finds nothing re-checks when it exits, against a count of
 retry timer. In tests that inspect rows as they were queued, pause the queue
 with a missing volume marker (`createPausedQueue`), not with "no mirror",
 which still lets URL rows through.
+
+**Lanes: one per VPN connection.** A Proton exit IP is shared with strangers,
+so one connection spends much of its time waiting out the per-IP limit even at
+our own slow pace. `docker-compose.local.yml` runs extra gluetun containers,
+each on a different Proton server with `HTTPPROXY=on`, at fixed addresses on
+the `lanes` network. Addresses are fixed because the app shares the main
+gluetun's network namespace and resolves names through the tunnel's DNS,
+where Docker service names don't exist. `LIBGEN_PROXIES`
+(`NAME=http://ip:8888,…`) lists them, and `LIBGEN_LANE_NAME` names the main
+connection.
+
+- **Pacing:** each lane (`DownloadLane`) is paced separately by the pacer.
+- **One lane per download:** a download's detail page and its file go out on
+  the same lane, because the `ads.php` key is issued to the address that
+  asked for it. `requestInit.proxy` is Bun's per-request proxy, so the type
+  is `BunFetchRequestInit`, not the standard `RequestInit`.
+- **Spreading workers:** each worker takes the lane with the fewest workers
+  that `LaneService` reports as ready. `LaneService` probes each lane every
+  minute through Cloudflare's `/cdn-cgi/trace` and logs its exit IP. A lane
+  that doesn't answer gets no work until it does.
+- **Proxy failures:** a mirror failing through a proxy isn't marked
+  unreachable, since the proxy may be the problem, and marking it would
+  remove the mirror from every lane.
+- **What goes on the lane:** a download's page and file, the DOI lookup's
+  Sci-Hub request (`SourceContext.proxy`; Sci-Hub's pacing and captcha
+  cooldown are kept per proxy, because the captcha is per IP), and URL
+  downloads. LibGen's own JSON lookups stay on the main connection, spaced by
+  `paceLibgenPage`.
+- **Busy responses are waits, not attempts:** the mirrors answer an address
+  that asks too often with a bare 503 (`LIBGEN_PAGE_MIN_INTERVAL_MS` spaces
+  page requests to avoid it). A refused page throws in `getDocument` rather
+  than parsing as "no record", and a proxied lane where nothing answers puts
+  the item back and is benched for 5 minutes. A 503 or 429 on a file request
+  cools the lane down and isn't counted as an attempt.
+- **Resume counts as progress:** the CDN answers `Range` with 206 (it didn't
+  when the transfer code was written). An attempt that leaves more of the
+  file on disk than any before it is neither one of the 6 attempts nor time
+  charged to the 45-minute budget. Only attempts that get nowhere are.
+- **Sci-Hub's certificate pin is a fallback:** in 2026 its page hosts moved to
+  Let's Encrypt, and the pin (the self-signed certificate as the only trust
+  anchor) then rejected everything. `fetchSciHub` verifies normally first
+  and pins only a host that fails on its certificate.
+- **Concurrency:** defaults to two workers per lane.
 
 Transfers get their own, larger budget: `DOWNLOAD_ATTEMPT_COUNT` (6) per mirror across `MAX_DOWNLOAD_MIRRORS` (4), spaced by `DOWNLOAD_BACKOFF_MS` and clamped in wall-clock terms by `DOWNLOAD_TOTAL_BUDGET_MS` (45 min). **An attempt count is not a time limit** — 24 tries at a few minutes each is hours with the sequential queue blocked behind one file, which is what the budget exists to bound. `THROTTLE_BACKOFF_MS` is separate and much longer: a mirror answering 429/503 is asking for a slower pace, not reporting a dropped connection.
 

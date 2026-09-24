@@ -160,3 +160,13 @@ export const LIBGEN_FILE_LIMIT_WINDOW_MS = 300_000;
 // under its limit. Four is a cautious start; the server reads
 // LIBGEN_CONCURRENCY to change it without a rebuild.
 export const QUEUE_CONCURRENCY = 4;
+
+// LibGen's mirrors answer an address that asks too often with a bare HTTP 503
+// "Service Temporarily Unavailable" - detail pages, JSON lookups and get.php
+// alike. With several workers per lane resolving pages across five mirrors,
+// that tripped within minutes, so page requests are spaced per lane too.
+export const LIBGEN_PAGE_MIN_INTERVAL_MS = 3000;
+
+// How long a lane stands back after a mirror said 503 or 429 on a file
+// request, when the answer names no Retry-After of its own.
+export const LIBGEN_BUSY_COOLDOWN_MS = 60_000;

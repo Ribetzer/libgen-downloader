@@ -2,7 +2,7 @@ import type { Adapter } from "../adapters/adapter";
 import type { ParsedQuery } from "../data/query";
 import type { MirrorCandidate } from "../data/resolve";
 import type { Entry } from "../models/entry";
-import { isSciHubPageHost, scihubRequestInit } from "./scihub";
+import { isSciHubPageHost, sciHubHostNeedsPin, scihubRequestInit } from "./scihub";
 
 /**
  * A library that can be searched, as distinct from a *mirror* of one.
@@ -60,6 +60,11 @@ export interface SourceContext {
   candidates: MirrorCandidate[];
   adapter?: Adapter;
   onMirrorUnreachable?: (mirrorSource: string) => void;
+  /**
+   * Another VPN connection's proxy to go out through, for a source whose
+   * limits are per IP. Only Sci-Hub uses it; the rest ignore it.
+   */
+  proxy?: string;
 }
 
 export interface Source {
@@ -84,7 +89,9 @@ export interface Source {
  * normal answer, and the pin never leaks past the hosts that require it.
  */
 export const downloadRequestInit = (downloadURL: string): RequestInit => {
-  if (isSciHubPageHost(downloadURL)) {
+  // Only a page host that has actually been seen with the self-signed
+  // certificate; with an ordinary one, the pin is what breaks the download.
+  if (isSciHubPageHost(downloadURL) && sciHubHostNeedsPin(new URL(downloadURL).hostname)) {
     return scihubRequestInit();
   }
 

@@ -1,5 +1,6 @@
 import { parseHTML } from "linkedom";
 import { BROWSER_USER_AGENT } from "../../settings";
+import { paceLibgenPage } from "./libgen-file-pacing";
 
 export interface DocumentResult {
   document: Document;
@@ -33,6 +34,7 @@ const requestHeaders = (url: string): Record<string, string> => {
 
 export async function getJSON(url: string): Promise<unknown> {
   try {
+    await paceLibgenPage();
     const response = await fetch(url, { headers: requestHeaders(url) });
 
     if (!response.ok) {
@@ -47,9 +49,28 @@ export async function getJSON(url: string): Promise<unknown> {
   }
 }
 
-export async function getDocument(searchURL: string): Promise<DocumentResult> {
+/**
+ * `proxy` sends the request out through another VPN connection, for the web
+ * server's download lanes; see `DownloadLane`.
+ */
+export async function getDocument(
+  searchURL: string,
+  options: { proxy?: string } = {}
+): Promise<DocumentResult> {
   try {
-    const response = await fetch(searchURL, { headers: requestHeaders(searchURL) });
+    await paceLibgenPage(options.proxy);
+    const response = await fetch(searchURL, {
+      headers: requestHeaders(searchURL),
+      proxy: options.proxy,
+    });
+    // A refusal is not a page. LibGen answers an over-busy address with 503
+    // "Service Temporarily Unavailable", which parses fine and has no download
+    // link - so read as a page it said "no record here", and an item failed
+    // as "not found on any mirror" for a file every mirror was holding.
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
     const htmlString = await response.text();
     const { document } = parseHTML(htmlString);
     return { document: document as unknown as Document, htmlString };

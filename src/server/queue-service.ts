@@ -1,4 +1,5 @@
-import { downloadByMD5, downloadFromURL } from "../api/data/download";
+import { downloadByMD5, DownloadLane, downloadFromURL } from "../api/data/download";
+import { DIRECT_LANE } from "../api/data/libgen-file-pacing";
 import type { DownloadResult } from "../api/models/download-result";
 import { downloadRequestInit } from "../api/sources";
 import { QUEUE_RETRY_MS } from "../settings";
@@ -25,10 +26,19 @@ interface QueueServiceArguments {
   retryMs?: number;
   /** How many items are worked on at once; 1 when not given. */
   concurrency?: number;
+  /**
+   * The ways out to LibGen, one per VPN connection. Workers are spread across
+   * them. The process's own connection alone when not given.
+   */
+  lanes?: DownloadLane[];
+  /** Whether a lane can be used right now; every lane is when not given. */
+  isLaneReady?: (lane: DownloadLane) => boolean;
+  /** Told when LibGen could not be reached at all through a proxied lane. */
+  onLaneTrouble?: (lane: DownloadLane) => void;
   /** Called once per item reaching a terminal state, for notifying elsewhere. */
   onFinished?: (item: QueueItem) => void;
   /** Looks up a DOI-only item when its turn comes; see `lookUpDOI`. */
-  resolveDOI?: (doi: string) => Promise<NewQueueItem | { reason: string }>;
+  resolveDOI?: (doi: string, lane?: DownloadLane) => Promise<NewQueueItem | { reason: string }>;
 }
 
 /**
@@ -53,6 +63,10 @@ export class QueueService {
   private listeners = new Set<Listener>();
   private workers = 0;
   private concurrency: number;
+  private lanes: DownloadLane[];
+  private laneWorkers = new Map<string, number>();
+  private isLaneReady: (lane: DownloadLane) => boolean;
+  private onLaneTrouble: ((lane: DownloadLane) => void) | undefined;
   /** Counts `start()` calls; see `work`. */
   private requests = 0;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -67,10 +81,19 @@ export class QueueService {
     storage,
     retryMs,
     concurrency,
+    lanes,
+    isLaneReady,
+    onLaneTrouble,
     onFinished,
     resolveDOI,
   }: QueueServiceArguments) {
     this.concurrency = Math.max(1, concurrency ?? 1);
+    this.lanes = [{ key: DIRECT_LANE }];
+    if (lanes && lanes.length > 0) {
+      this.lanes = lanes;
+    }
+    this.isLaneReady = isLaneReady ?? (() => true);
+    this.onLaneTrouble = onLaneTrouble;
     this.store = store;
     this.mirrors = mirrors;
     this.outputDirectory = outputDirectory;
@@ -201,9 +224,19 @@ export class QueueService {
   start(): void {
     this.requests += 1;
     while (this.workers < this.concurrency) {
+      const lane = this.quietestLane();
+      if (!lane) {
+        // Every lane is down. The lane check or the retry timer calls start()
+        // again once one comes back.
+        this.scheduleRetry();
+        return;
+      }
+
       this.workers += 1;
-      void this.work().then((checkedAt) => {
+      this.laneWorkers.set(lane.key, (this.laneWorkers.get(lane.key) ?? 0) + 1);
+      void this.work(lane).then((checkedAt) => {
         this.workers -= 1;
+        this.laneWorkers.set(lane.key, (this.laneWorkers.get(lane.key) ?? 1) - 1);
         // Work queued between this worker finding nothing and it counting
         // itself out would otherwise wait: `start()` saw every slot taken
         // and started nobody. So a worker that ran dry takes another look.
@@ -225,8 +258,32 @@ export class QueueService {
    * more work would not change - no disk, or nothing it can fetch without a
    * mirror - in which case the retry timer brings it back.
    */
-  private async work(): Promise<number | undefined> {
+  /** The usable lane with the fewest workers, so the load spreads evenly. */
+  private quietestLane(): DownloadLane | undefined {
+    let quietest: DownloadLane | undefined;
+    for (const lane of this.lanes) {
+      if (!this.isLaneReady(lane)) {
+        continue;
+      }
+
+      const load = this.laneWorkers.get(lane.key) ?? 0;
+      if (!quietest || load < (this.laneWorkers.get(quietest.key) ?? 0)) {
+        quietest = lane;
+      }
+    }
+
+    return quietest;
+  }
+
+  private async work(lane: DownloadLane): Promise<number | undefined> {
     for (;;) {
+      // A lane whose VPN connection has dropped hands its worker back, and
+      // start() gives the slot to a lane that is up.
+      if (!this.isLaneReady(lane)) {
+        this.scheduleRetry();
+        return undefined;
+      }
+
       // With the output volume unplugged there is nowhere to write, and an
       // unplugged cable must not fail a queue. Leave it and come back.
       if (this.storage && !(await this.storage.isReady())) {
@@ -247,7 +304,7 @@ export class QueueService {
         return checkedAt;
       }
 
-      await this.process(item);
+      await this.process(item, lane);
       this.announceFinished(item.id);
     }
   }
@@ -262,8 +319,9 @@ export class QueueService {
       return;
     }
 
+    // An item handed back to the queue is not done with.
     const item = this.store.get(id);
-    if (!item) {
+    if (!item || !TERMINAL_STATUSES.includes(item.status)) {
       return;
     }
 
@@ -274,16 +332,16 @@ export class QueueService {
     }
   }
 
-  private async process(queued: QueueItem): Promise<void> {
+  private async process(queued: QueueItem, lane: DownloadLane): Promise<void> {
     this.change(queued.id, { status: "resolving", error: "", progress: 0 });
 
     let item: QueueItem | undefined = queued;
     if (!queued.md5 && !queued.url && queued.doi) {
-      item = await this.lookUpDOI(queued);
+      item = await this.lookUpDOI(queued, lane);
     }
 
     if (item) {
-      await this.transfer(item);
+      await this.transfer(item, lane);
     }
   }
 
@@ -293,13 +351,13 @@ export class QueueService {
    * the lookups keep the same one-at-a-time pace as the downloads, and a DOI
    * no source holds becomes an ordinary failed row that can be retried.
    */
-  private async lookUpDOI(item: QueueItem): Promise<QueueItem | undefined> {
+  private async lookUpDOI(item: QueueItem, lane: DownloadLane): Promise<QueueItem | undefined> {
     if (!this.resolveDOI) {
       this.change(item.id, { status: "failed", error: "no DOI lookup available" });
       return;
     }
 
-    const resolved = await this.resolveDOI(item.doi);
+    const resolved = await this.resolveDOI(item.doi, lane);
     if ("reason" in resolved) {
       this.change(item.id, { status: "failed", error: resolved.reason });
       return;
@@ -316,7 +374,7 @@ export class QueueService {
     return this.store.get(item.id);
   }
 
-  private async transfer(item: QueueItem): Promise<void> {
+  private async transfer(item: QueueItem, lane: DownloadLane): Promise<void> {
     // The callbacks are the same whichever route the file takes; only the way
     // its location is worked out differs.
     const shared = {
@@ -347,7 +405,9 @@ export class QueueService {
         downloadURL: item.url,
         // Whatever the host needs to be fetched at all - the Sci-Hub pin, for
         // a PDF served from the page host rather than the storage one.
-        requestInit: downloadRequestInit(item.url),
+        // The lane's proxy as well: a PDF on a Sci-Hub page host is behind the
+        // same per-IP captcha as the lookup that found it.
+        requestInit: { ...downloadRequestInit(item.url), proxy: lane.proxy },
         ...shared,
       });
 
@@ -360,14 +420,37 @@ export class QueueService {
       return;
     }
 
+    // A LibGen file goes out on this worker's lane. Its retry messages say
+    // which, since each lane has an allowance - and a server - of its own.
+    let laneNote = "";
+    if (this.lanes.length > 1) {
+      laneNote = `[${lane.key}] `;
+    }
     const outcome = await downloadByMD5({
       md5: item.md5,
+      lane,
       candidates: this.mirrors.getCandidates(),
       onMirrorUnreachable: (mirrorSource) => {
         this.mirrors.markUnreachable(mirrorSource);
       },
       ...shared,
+      onRetry: (message: string) => {
+        this.change(item.id, { status: "retrying", error: laneNote + message, progress: 0 });
+      },
     });
+
+    // No mirror answered through a proxied lane: that is the lane, not the
+    // file - LibGen answers a busy exit IP with 503s. Back in the queue for
+    // another lane, and this one benched for a while.
+    if (outcome.status === "failed" && outcome.unreachable && lane.proxy) {
+      this.onLaneTrouble?.(lane);
+      this.change(item.id, {
+        status: "queued",
+        error: `${laneNote}LibGen did not answer through this lane - back in the queue`,
+        progress: 0,
+      });
+      return;
+    }
 
     if (outcome.status === "failed") {
       this.change(item.id, { status: "failed", error: outcome.reason });
