@@ -86,6 +86,17 @@ export const readFileLimit = (body: string): { windowMs: number; files?: number 
   return { windowMs, files };
 };
 
+/**
+ * LibGen's database running out of connections, as its download server
+ * reports it: an HTTP 500 carrying the MySQL error - captured through a lane,
+ * "3306. User 'libgen_get' has exceeded the 'max_user_connections' resource".
+ * It is the whole server being overloaded, for everyone, and says nothing
+ * about the file; read by status alone it counted as a failed attempt.
+ */
+const BUSY_PAGE = /max_user_connections|too many connections|SQLSTATE\[HY000\] \[1040\]/i;
+
+export const readBusyPage = (body: string): boolean => BUSY_PAGE.test(body);
+
 /** How long a request arriving now has to wait: the interval or the cooldown. */
 export const libgenFileWaitMs = (
   now: number,

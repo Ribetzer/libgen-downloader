@@ -4,7 +4,12 @@ import type { Entry } from "../src/api/models/entry";
 import type { SourceId, SourceOutcome } from "../src/api/sources";
 import { readArticleTitle, readDOI } from "../src/api/sources/libgen";
 import { MirrorService } from "../src/server/mirror-service";
-import { runSearch, SearchResultItem, withIdentity } from "../src/server/search-service";
+import {
+  findFilesForDOI,
+  runSearch,
+  SearchResultItem,
+  withIdentity,
+} from "../src/server/search-service";
 
 const entry = (overrides: Partial<Entry>): Entry => ({
   id: "x",
@@ -237,5 +242,56 @@ describe("runSearch across sources", () => {
 
     expect(outcome.items).toHaveLength(1);
     expect(outcome.notes[0].message).toContain("ENOTFOUND");
+  });
+});
+
+/** A stub that records whether it was asked. */
+const countingSource = (id: SourceId, outcome: SourceOutcome) => {
+  const calls: number[] = [];
+  return {
+    calls,
+    source: {
+      ...stubSource(id, outcome),
+      search: async () => {
+        calls.push(Date.now());
+        return outcome;
+      },
+    },
+  };
+};
+
+describe("findFilesForDOI", () => {
+  const DOI = "10.1145/37402.37422";
+
+  it("does not ask Sci-Hub about a DOI LibGen holds", async () => {
+    // Asking both at once made every lookup wait on Sci-Hub's captcha too,
+    // holding DOIs LibGen had already answered in "resolving".
+    const libgen = countingSource("libgen", { status: "ok", items: [result("libgen", "held")] });
+    const scihub = countingSource("scihub", { status: "error", message: "captcha" });
+
+    const { items } = await findFilesForDOI(new MirrorService(), DOI, undefined, [
+      libgen.source,
+      scihub.source,
+    ]);
+
+    expect(items.map((found) => found.source)).toEqual(["libgen"]);
+    expect(scihub.calls).toHaveLength(0);
+  });
+
+  it("asks Sci-Hub when LibGen has nothing, and says why it gave no answer", async () => {
+    const libgen = countingSource("libgen", { status: "ok", items: [] });
+    const scihub = countingSource("scihub", {
+      status: "error",
+      message: "Sci-Hub asked for a captcha; try again later",
+    });
+
+    const { items, unanswered } = await findFilesForDOI(new MirrorService(), DOI, undefined, [
+      libgen.source,
+      scihub.source,
+    ]);
+
+    expect(items).toEqual([]);
+    expect(scihub.calls).toHaveLength(1);
+    expect(unanswered).toEqual(["Sci-Hub asked for a captcha; try again later"]);
   });
 });

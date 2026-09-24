@@ -28,6 +28,9 @@ interface QueueItem {
   origin: string;
   /** What the DOI is, for a listed row; absent while still being looked up. */
   meta?: DOIMetadata;
+  /** When a deferred item is tried again (UTC, "YYYY-MM-DD HH:MM:SS"); empty otherwise. */
+  retryAt: string;
+  deferrals: number;
   status: string;
   filename: string;
   mirror: string;
@@ -166,6 +169,17 @@ const MetaLine = ({ item }: { item: QueueItem }) => {
   );
 };
 
+/** "14:32", or "Thu 02:10" when it is not today, in the viewer's own time. */
+const formatRetryAt = (retryAt: string): string => {
+  const when = new Date(`${retryAt.replace(" ", "T")}Z`);
+  const time = when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (when.toDateString() === new Date().toDateString()) {
+    return time;
+  }
+
+  return `${when.toLocaleDateString([], { weekday: "short" })} ${time}`;
+};
+
 const ItemRows = ({
   items,
   onCancel,
@@ -216,7 +230,26 @@ const ItemRows = ({
                 <div style={{ width: `${percentage}%` }} />
               </div>
             )}
-            {item.error && <div className="error">{item.error}</div>}
+            {item.status === "queued" && item.retryAt && (
+              <div className="deferred">
+                waiting to try again at {formatRetryAt(item.retryAt)} (retry {item.deferrals})
+              </div>
+            )}
+            {item.error && (
+              <div className={item.status === "queued" ? "error muted" : "error"}>{item.error}</div>
+            )}
+            {item.status === "failed" && item.doi && (
+              // Sci-Hub now asks automated requests for a captcha, so what it
+              // holds is one click away in a browser rather than lost.
+              <a
+                className="small open-elsewhere"
+                href={`https://sci-hub.st/${item.doi}`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Open on Sci-Hub
+              </a>
+            )}
           </td>
           <td className="nowrap">
             {formatBytes(item.progress)}
@@ -269,8 +302,8 @@ const App = () => {
   const [dragging, setDragging] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
-  const loadConfig = useCallback(async () => {
-    const response = await fetch("/api/config");
+  const loadConfig = useCallback(async (recheck = false) => {
+    const response = await fetch(recheck ? "/api/config?recheck" : "/api/config");
     setConfig((await response.json()) as ServerConfig);
   }, []);
 
@@ -541,9 +574,17 @@ const App = () => {
       {config?.storageError && (
         <div className="banner">
           {config.storageError} —{" "}
-          <button className="small" onClick={() => void loadConfig()}>
+          <button className="small" onClick={() => void loadConfig(true)}>
             check again
           </button>
+          {config.storageError.includes("marker") && (
+            <div className="hint">
+              If the drive is plugged in, Docker has probably not mounted it: WSL2 only sees
+              removable drives that were attached when it started, so after a restart it hands the
+              container an empty folder instead. The fix is in the comments at the top of
+              docker-compose.local.yml.
+            </div>
+          )}
         </div>
       )}
 

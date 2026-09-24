@@ -2,7 +2,7 @@ import { downloadByMD5, DownloadLane, downloadFromURL } from "../api/data/downlo
 import { DIRECT_LANE } from "../api/data/libgen-file-pacing";
 import type { DownloadResult } from "../api/models/download-result";
 import { downloadRequestInit } from "../api/sources";
-import { QUEUE_RETRY_MS } from "../settings";
+import { DEFER_SCHEDULE_MS, QUEUE_RETRY_MS } from "../settings";
 import { ItemStore, NewQueueItem, QueueItem, TERMINAL_STATUSES } from "./database";
 import { MirrorService } from "./mirror-service";
 import { StorageService } from "./storage-service";
@@ -38,7 +38,12 @@ interface QueueServiceArguments {
   /** Called once per item reaching a terminal state, for notifying elsewhere. */
   onFinished?: (item: QueueItem) => void;
   /** Looks up a DOI-only item when its turn comes; see `lookUpDOI`. */
-  resolveDOI?: (doi: string, lane?: DownloadLane) => Promise<NewQueueItem | { reason: string }>;
+  resolveDOI?: (
+    doi: string,
+    lane?: DownloadLane
+  ) => Promise<NewQueueItem | { reason: string; transient?: boolean }>;
+  /** Waits before a transient failure is tried again; see DEFER_SCHEDULE_MS. */
+  deferScheduleMs?: number[];
 }
 
 /**
@@ -73,6 +78,7 @@ export class QueueService {
   private retryMs: number;
   private onFinished: ((item: QueueItem) => void) | undefined;
   private resolveDOI: QueueServiceArguments["resolveDOI"];
+  private deferScheduleMs: number[];
 
   constructor({
     store,
@@ -86,6 +92,7 @@ export class QueueService {
     onLaneTrouble,
     onFinished,
     resolveDOI,
+    deferScheduleMs,
   }: QueueServiceArguments) {
     this.concurrency = Math.max(1, concurrency ?? 1);
     this.lanes = [{ key: DIRECT_LANE }];
@@ -101,6 +108,7 @@ export class QueueService {
     this.retryMs = retryMs ?? QUEUE_RETRY_MS;
     this.onFinished = onFinished;
     this.resolveDOI = resolveDOI;
+    this.deferScheduleMs = deferScheduleMs ?? DEFER_SCHEDULE_MS;
   }
 
   /**
@@ -183,6 +191,29 @@ export class QueueService {
 
   addMany(entries: NewQueueItem[]): QueueItem[] {
     return entries.map((entry) => this.add(entry));
+  }
+
+  /**
+   * Trouble that says nothing about the file - an overloaded server, dropped
+   * connections, a captcha - puts the item back to wait, for longer each time,
+   * instead of failing it: retrying at once cannot outlast an outage measured
+   * in hours, and it used to turn a busy evening into a page of failures.
+   * Once the waits are used up it fails, saying how long it was given.
+   */
+  private deferOrFail(id: number, reason: string): void {
+    const deferrals = this.store.get(id)?.deferrals ?? 0;
+    const delayMs = this.deferScheduleMs[deferrals];
+    if (delayMs === undefined) {
+      const hours = this.deferScheduleMs.reduce((sum, ms) => sum + ms, 0) / 3_600_000;
+      this.change(id, {
+        status: "failed",
+        error: `${reason} - still failing after being retried over ${Math.round(hours)} hours`,
+      });
+      return;
+    }
+
+    this.store.defer(id, delayMs, `${reason} - trying again later`);
+    this.publish(id, "item-updated");
   }
 
   /** Tell listeners that these rows changed in place; see `items-refreshed`. */
@@ -359,6 +390,11 @@ export class QueueService {
 
     const resolved = await this.resolveDOI(item.doi, lane);
     if ("reason" in resolved) {
+      if (resolved.transient) {
+        this.deferOrFail(item.id, resolved.reason);
+        return;
+      }
+
       this.change(item.id, { status: "failed", error: resolved.reason });
       return;
     }
@@ -411,6 +447,11 @@ export class QueueService {
         ...shared,
       });
 
+      if (outcome.status === "failed" && outcome.transient) {
+        this.deferOrFail(item.id, outcome.reason);
+        return;
+      }
+
       if (outcome.status === "failed") {
         this.change(item.id, { status: "failed", error: outcome.reason });
         return;
@@ -449,6 +490,11 @@ export class QueueService {
         error: `${laneNote}LibGen did not answer through this lane - back in the queue`,
         progress: 0,
       });
+      return;
+    }
+
+    if (outcome.status === "failed" && outcome.transient) {
+      this.deferOrFail(item.id, outcome.reason);
       return;
     }
 

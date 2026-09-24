@@ -232,6 +232,7 @@ describe("downloadByMD5", () => {
       status: "failed",
       reason: "not found on any mirror (first.example, second.example)",
       unreachable: false,
+      transient: false,
     });
   });
 
@@ -480,8 +481,68 @@ describe("downloadByMD5", () => {
 
     expect(outcome.status).toBe("downloaded");
     expect(fileRequestCount).toBe(DROPS + 1);
-    expect(retryMessages.every((message) => message.includes("not counted as an attempt"))).toBe(
-      true
+    // The first attempt had nothing to resume from, so its drop is counted;
+    // every later one resumed (206) and moved the file on, so none is.
+    expect(retryMessages[0]).toContain("(2/6)");
+    expect(
+      retryMessages.slice(1).every((message) => message.includes("not counted as an attempt"))
+    ).toBe(true);
+  });
+
+  it("counts drops as attempts when the server restarts from zero instead of resuming", async () => {
+    // LibGen's CDN as re-measured on 24 September: Range asked for, 200 and
+    // the whole file sent back. Each attempt rewrites the part from zero, so
+    // one getting further than the last is luck, not progress.
+    let fileRequestCount = 0;
+    let written = 0;
+    mockFetch(async (input) => {
+      if (input.toString().includes("/ads.php")) {
+        return new Response(detailPage("first.example"));
+      }
+
+      fileRequestCount += 1;
+      written = 0;
+      return new Response("chunk", {
+        headers: {
+          "content-disposition": 'attachment; filename="book.epub"',
+          "content-length": "1000",
+        },
+      });
+    });
+    spyOn(fs, "createWriteStream").mockImplementation(
+      () =>
+        new Writable({
+          write(_chunk, _encoding, callback) {
+            // Each restart gets a little further than the one before.
+            written = fileRequestCount * 5;
+            callback(new Error("The socket connection was closed unexpectedly"));
+          },
+        }) as fs.WriteStream
+    );
+    stubPartFileRename();
+    spyOn(fs.promises, "rm").mockImplementation(async () => {});
+    spyOn(fs.promises, "stat").mockImplementation((async (target: fs.PathLike) => {
+      if (String(target).endsWith(".part")) {
+        return { isFile: () => true, size: written } as fs.Stats;
+      }
+
+      throw new Error("ENOENT");
+    }) as unknown as typeof fs.promises.stat);
+    const retryMessages: string[] = [];
+
+    const outcome = await downloadByMD5({
+      md5: MD5,
+      candidates: [createCandidate("first.example")],
+      ...noopCallbacks,
+      onRetry: (message) => retryMessages.push(message),
+      retryDelayMs: 0,
+    });
+
+    expect(outcome).toMatchObject({ status: "failed", transient: true });
+    expect(fileRequestCount).toBe(6);
+    expect(retryMessages.some((message) => message.includes("restarted from zero"))).toBe(true);
+    expect(retryMessages.some((message) => message.includes("not counted as an attempt"))).toBe(
+      false
     );
   });
 

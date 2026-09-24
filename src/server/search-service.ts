@@ -34,6 +34,39 @@ export const withIdentity = (items: SearchResultItem[]): SearchResultItem[] =>
   items.filter((item) => Boolean(item.md5) || Boolean(item.downloadURL));
 
 /**
+ * The files a DOI names: LibGen first, and the other sources only when it has
+ * nothing. Asking them all at once meant every lookup waited on Sci-Hub too -
+ * which now answers automated requests with a captcha - so a DOI LibGen had
+ * already found sat in "resolving" and the queue ran at half its workers.
+ * `unanswered` says why any source asked gave no answer.
+ */
+export const findFilesForDOI = async (
+  mirrors: MirrorService,
+  doi: string,
+  proxy?: string,
+  sources: Source[] = SOURCES
+): Promise<{ items: SearchResultItem[]; unanswered: string[] }> => {
+  const unanswered: string[] = [];
+  const ask = async (asked: Source[]) => {
+    const outcome = await runSearch(mirrors, doi, 1, asked, proxy);
+    if (outcome.status !== "ok") {
+      unanswered.push(outcome.message);
+      return [];
+    }
+
+    unanswered.push(...outcome.notes.map((note) => note.message));
+    return outcome.items;
+  };
+
+  let items = await ask(sources.filter((source) => source.id === "libgen"));
+  if (items.length === 0) {
+    items = await ask(sources.filter((source) => source.id !== "libgen"));
+  }
+
+  return { items, unanswered };
+};
+
+/**
  * Asks every library that can answer, at once, and merges what comes back.
  *
  * One source failing is not a failed search: with arXiv unreachable, LibGen's

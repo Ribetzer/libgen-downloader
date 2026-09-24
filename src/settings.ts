@@ -170,3 +170,10 @@ export const LIBGEN_PAGE_MIN_INTERVAL_MS = 3000;
 // How long a lane stands back after a mirror said 503 or 429 on a file
 // request, when the answer names no Retry-After of its own.
 export const LIBGEN_BUSY_COOLDOWN_MS = 60_000;
+
+// How long an item waits before it is tried again after trouble that says
+// nothing about the file itself: LibGen's server overloaded, connections
+// dropped until the attempts ran out, Sci-Hub asking for a captcha. Retrying
+// straight away cannot outlast an outage measured in hours, so the waits
+// lengthen; once they are used up the item fails as it always did.
+export const DEFER_SCHEDULE_MS = [30 * 60_000, 2 * 3_600_000, 6 * 3_600_000, 12 * 3_600_000];

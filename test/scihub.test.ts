@@ -332,3 +332,31 @@ describe("downloadRequestInit", () => {
     expect(downloadRequestInit("https://sci-hub.st/storage/a.pdf")).toEqual({});
   });
 });
+
+describe("scihubSource during a captcha cooldown", () => {
+  afterEach(() => {
+    resetScihubPacing();
+    delete process.env.LIBGEN_SCIHUB_HOSTS;
+  });
+
+  it("answers at once rather than sitting the cooldown out", async () => {
+    process.env.LIBGEN_SCIHUB_HOSTS = "sci-hub.example";
+    const { fetchMock, requestedURLs } = mockFetch(
+      async () => new Response("<html><title>Sci-Hub</title>altcha</html>")
+    );
+    // The first lookup is challenged and starts the cooldown…
+    await scihubSource.search({ kind: "doi", doi: "10.1145/1" }, 1, { candidates: [] });
+    const asked = requestedURLs.length;
+
+    // …and the next returns straight away, without asking again.
+    const started = Date.now();
+    const outcome = await scihubSource.search({ kind: "doi", doi: "10.1145/2" }, 1, {
+      candidates: [],
+    });
+    fetchMock.mockRestore();
+
+    expect(outcome).toMatchObject({ status: "error" });
+    expect(requestedURLs.length).toBe(asked);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+});

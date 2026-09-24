@@ -56,6 +56,14 @@ export interface QueueItem {
   origin: string;
   /** What the DOI is, once looked up; absent while the lookup is pending. */
   meta?: DOIMetadata;
+  /**
+   * When a deferred item may be tried again (UTC, SQLite's datetime format);
+   * empty when it is not waiting. Transient trouble - an overloaded server, a
+   * dropped connection, a captcha - defers an item rather than failing it.
+   */
+  retryAt: string;
+  /** How many times the item has been deferred since it was last queued by hand. */
+  deferrals: number;
   status: ItemStatus;
   filename: string;
   mirror: string;
@@ -75,6 +83,8 @@ interface ItemRow {
   doi: string | null;
   origin: string | null;
   meta: string | null;
+  retry_at: string | null;
+  deferrals: number | null;
   status: string;
   filename: string | null;
   mirror: string | null;
@@ -107,6 +117,8 @@ const toQueueItem = (row: ItemRow): QueueItem => ({
   doi: row.doi || "",
   origin: row.origin || "",
   meta: parseMeta(row.meta),
+  retryAt: row.retry_at || "",
+  deferrals: row.deferrals || 0,
   status: row.status as ItemStatus,
   filename: row.filename || "",
   mirror: row.mirror || "",
@@ -146,7 +158,15 @@ export class ItemStore {
     // Added after the table existed, so an older database gets them here
     // rather than through a fresh CREATE. Duplicate-column is the expected
     // outcome on every run after the first.
-    for (const column of ["doi TEXT", "source TEXT", "url TEXT", "origin TEXT", "meta TEXT"]) {
+    for (const column of [
+      "doi TEXT",
+      "source TEXT",
+      "url TEXT",
+      "origin TEXT",
+      "meta TEXT",
+      "retry_at TEXT",
+      "deferrals INTEGER DEFAULT 0",
+    ]) {
       try {
         this.database.run(`ALTER TABLE items ADD COLUMN ${column}`);
       } catch {
@@ -242,7 +262,8 @@ export class ItemStore {
    * URL - what can still be fetched while no LibGen mirror is reachable.
    */
   claimNext(withoutMirror = false): QueueItem | undefined {
-    let condition = "status = 'queued'";
+    // A deferred row waits out its time before any worker may take it.
+    let condition = "status = 'queued' AND (retry_at IS NULL OR retry_at <= datetime('now'))";
     if (withoutMirror) {
       condition += " AND COALESCE(url, '') <> ''";
     }
@@ -261,6 +282,22 @@ export class ItemStore {
     }
 
     return toQueueItem(row);
+  }
+
+  /**
+   * Put an item back to wait for `delayMs`, recording why. For trouble that
+   * says nothing about the file - an overloaded server, a dropped connection,
+   * a captcha - which retrying at once cannot outlast. `updated_at` is left
+   * alone: the row is back in the queue, not newly finished.
+   */
+  defer(id: number, delayMs: number, note: string): void {
+    this.database.run(
+      `UPDATE items
+          SET status = 'queued', error = ?, progress = 0,
+              retry_at = datetime('now', ?), deferrals = COALESCE(deferrals, 0) + 1
+        WHERE id = ?`,
+      [note, `+${Math.round(delayMs / 1000)} seconds`, id]
+    );
   }
 
   /** Whether anything is waiting at all, claimable or not. */
@@ -377,7 +414,7 @@ export class ItemStore {
     const result = this.database.run(
       `UPDATE items
           SET status = 'queued', error = '', progress = 0, total = 0, filename = '',
-              mirror = '', updated_at = datetime('now')
+              mirror = '', retry_at = NULL, deferrals = 0, updated_at = datetime('now')
         WHERE id = ? AND status IN ('failed', 'cancelled')`,
       [id]
     );

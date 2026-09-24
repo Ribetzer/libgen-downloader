@@ -11,6 +11,7 @@ import {
   DIRECT_LANE,
   noteLibgenFileLimit,
   paceLibgenFile,
+  readBusyPage,
   readFileLimit,
 } from "./libgen-file-pacing";
 import { MirrorCandidate, resolveDownloadURL, ResolveResult } from "./resolve";
@@ -389,7 +390,21 @@ const describeProgress = (receivedBytes: number, total: number): string => {
 
 type TransferOutcome =
   | { status: "downloaded"; result: DownloadResult }
-  | { status: "failed"; reason: string };
+  // `transient`: nothing said the file is gone - dropped connections, an
+  // overloaded server - so trying again later may well succeed.
+  | { status: "failed"; reason: string; transient: boolean };
+
+/** Answers that say the file is not there, as opposed to not right now. */
+const PERMANENT_STATUS_CODES = new Set([400, 401, 403, 404, 410]);
+
+/** The page's own title, for saying what came back instead of a file. */
+const pageTitle = (html: string): string =>
+  /<title>([^<]*)<\/title>/i.exec(html)?.[1]?.trim() ||
+  html
+    .replaceAll(/<[^>]+>/g, " ")
+    .replaceAll(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
 
 /**
  * One spacing source, resolved once. A caller that names a single
@@ -436,9 +451,16 @@ const transferFile = async ({
   // made real progress, which the attempt count and the budget should not
   // charge for; only attempts that get nowhere use them up.
   let heldHighWater = 0;
+  // Whether the last failure said the file itself is gone (a 404, say).
+  let permanent = false;
 
   for (let index = 0; index < DOWNLOAD_ATTEMPT_COUNT; index++) {
     let limited = false;
+    // Set once the server has answered: whether it honoured the Range and
+    // resumed. Only a real resume makes a dropped attempt progress.
+    let resumed = false;
+    let restartedFromZero = false;
+    permanent = false;
     const attemptStartedAt = Date.now();
     let waitMs = backoffMs[Math.min(index, backoffMs.length - 1)];
     let attemptBytes = 0;
@@ -462,24 +484,42 @@ const transferFile = async ({
 
       const downloadStream = await fetch(downloadURL, { ...requestInit, headers });
 
-      if (!downloadStream.ok) {
-        // LibGen's CDN reports its per-IP file limit as a plain HTTP 500 with
-        // an explanatory page, so the status alone reads as a broken server.
-        // Retrying that at the ordinary backoff only adds to the count.
-        if (libgenLane) {
-          const limit = readFileLimit(await downloadStream.text().catch(() => ""));
-          if (limit) {
-            noteLibgenFileLimit(limit.windowMs, libgenLane);
-            waitMs = limit.windowMs;
-            limited = true;
-            let quota = `${limit.windowMs / 1000}s`;
-            if (limit.files) {
-              quota = `${limit.files} files per ${quota}`;
-            }
-            throw new Error(`LibGen's download limit reached (${quota})`);
+      // LibGen answers trouble with a page: the per-IP file limit and its own
+      // database running out of connections both come back as HTTP 500, and
+      // an error page can come back as a 200 in place of the file. Read as
+      // what they are, they are waits; read by status alone, they were
+      // failed attempts, or a "missing content-disposition" on a PDF.
+      const servedPage =
+        downloadStream.ok &&
+        !downloadStream.headers.get("content-disposition") &&
+        (downloadStream.headers.get("content-type") || "").includes("text/html");
+      if (libgenLane && (!downloadStream.ok || servedPage)) {
+        const body = await downloadStream.text().catch(() => "");
+        const limit = readFileLimit(body);
+        if (limit) {
+          noteLibgenFileLimit(limit.windowMs, libgenLane);
+          waitMs = limit.windowMs;
+          limited = true;
+          let quota = `${limit.windowMs / 1000}s`;
+          if (limit.files) {
+            quota = `${limit.files} files per ${quota}`;
           }
+          throw new Error(`LibGen's download limit reached (${quota})`);
         }
 
+        if (readBusyPage(body)) {
+          noteLibgenFileLimit(LIBGEN_BUSY_COOLDOWN_MS, libgenLane);
+          waitMs = LIBGEN_BUSY_COOLDOWN_MS;
+          limited = true;
+          throw new Error("LibGen's server is overloaded (out of database connections)");
+        }
+
+        if (servedPage) {
+          throw new Error(`LibGen sent a page instead of the file: ${pageTitle(body)}`);
+        }
+      }
+
+      if (!downloadStream.ok) {
         // A mirror too busy for this address says 503 or 429. Through a lane,
         // that is the lane's problem like the file limit is: the lane stands
         // back and the item waits, rather than spending its attempts on it.
@@ -500,8 +540,12 @@ const transferFile = async ({
           throw new Error(`HTTP ${downloadStream.status} (throttled)`);
         }
 
+        permanent = PERMANENT_STATUS_CODES.has(downloadStream.status);
         throw new Error(`HTTP ${downloadStream.status}`);
       }
+
+      resumed = downloadStream.status === 206 && resumeFromBytes > 0;
+      restartedFromZero = downloadStream.status !== 206 && resumeFromBytes > 0;
 
       const result = await downloadFile({
         downloadStream,
@@ -538,13 +582,19 @@ const transferFile = async ({
         continue;
       }
 
-      // The connection dropped, but the file on disk is further along than it
-      // has ever been: a slow link that keeps being cut, not a dead one. With
-      // the CDN resuming, each such attempt carries on from where the last
-      // stopped, so it is neither an attempt nor time charged to the budget -
-      // otherwise a large file on a flaky link ran out of both at a third done.
+      if (permanent) {
+        break;
+      }
+
+      // The connection dropped after the server resumed from what was held,
+      // and the file on disk is further along than ever: a slow link that
+      // keeps being cut, not a dead one, and each attempt carries on from
+      // the last - so it is neither an attempt nor time charged to the budget.
+      // Only a real resume (206) counts. On a 200 the part is rewritten from
+      // zero, and "further than ever" is just a luckier restart - which is
+      // what LibGen's CDN does as of 24 September, when it was re-measured.
       const heldBytes = await partFileSize(partPath);
-      if (heldBytes > heldHighWater) {
+      if (resumed && heldBytes > heldHighWater) {
         heldHighWater = heldBytes;
         limitedMs += Date.now() - attemptStartedAt;
         index -= 1;
@@ -569,10 +619,16 @@ const transferFile = async ({
         break;
       }
 
+      heldHighWater = Math.max(heldHighWater, heldBytes);
+
       if (onRetry) {
         const waitSeconds = Math.round(waitMs / 1000);
+        let restartNote = "";
+        if (restartedFromZero) {
+          restartNote = ", restarted from zero - this server does not resume";
+        }
         onRetry(
-          `${lastError} - ${describeProgress(attemptBytes, attemptTotal)}, ` +
+          `${lastError} - ${describeProgress(attemptBytes, attemptTotal)}${restartNote}, ` +
             `retrying in ${waitSeconds}s (${index + 2}/${DOWNLOAD_ATTEMPT_COUNT})`
         );
       }
@@ -586,7 +642,7 @@ const transferFile = async ({
   // half-files that nothing will ever finish.
   await removePartialFile(partPath);
 
-  return { status: "failed", reason: lastError };
+  return { status: "failed", reason: lastError, transient: !permanent };
 };
 
 const getMirrorLabel = (mirrorSource: string): string => {
@@ -633,7 +689,7 @@ interface DownloadFromURLArguments {
 
 export type DownloadFromURLOutcome =
   | { status: "downloaded"; result: DownloadResult }
-  | { status: "failed"; reason: string };
+  | { status: "failed"; reason: string; transient: boolean };
 
 /**
  * Downloads a file whose location is already known.
@@ -685,7 +741,14 @@ export const downloadFromURL = async ({
     return { status: "downloaded", result: outcome.result };
   }
 
-  return { status: "failed", reason: `download failed: ${outcome.reason}` };
+  // Sci-Hub's storage links go dead: a 404 there is its copy being gone,
+  // which is worth saying plainly rather than as a bare status.
+  let reason = `download failed: ${outcome.reason}`;
+  if (!outcome.transient && outcome.reason === "HTTP 404" && /sci-hub/i.test(downloadURL)) {
+    reason = "Sci-Hub's copy of this file is missing (HTTP 404)";
+  }
+
+  return { status: "failed", reason, transient: outcome.transient };
 };
 
 /**
@@ -724,8 +787,9 @@ interface DownloadByMD5Arguments {
 export type DownloadByMD5Outcome =
   | { status: "downloaded"; result: DownloadResult; mirror: Mirror }
   // `unreachable`: no mirror answered at all, which says nothing about the
-  // file - through a proxy lane, it is usually the lane.
-  | { status: "failed"; reason: string; unreachable?: boolean };
+  // file - through a proxy lane, it is usually the lane. `transient`: nothing
+  // said the file is gone, so trying again later may well succeed.
+  | { status: "failed"; reason: string; unreachable?: boolean; transient: boolean };
 
 /**
  * Resolves an MD5 against the candidate mirrors and downloads it, restarting a
@@ -753,6 +817,7 @@ export const downloadByMD5 = async ({
   let remainingCandidates = [...candidates];
   const failedMirrorLabels: string[] = [];
   let lastTransferError: string | undefined;
+  let lastTransferTransient = true;
   const deadline = Date.now() + totalBudgetMs;
 
   for (let mirrorIndex = 0; mirrorIndex < MAX_DOWNLOAD_MIRRORS; mirrorIndex++) {
@@ -779,6 +844,9 @@ export const downloadByMD5 = async ({
         status: "failed",
         reason: describeResolveFailure(resolveResult),
         unreachable: resolveResult.status === "unreachable",
+        // Every mirror answering "no record" is a real answer; none answering
+        // is not.
+        transient: resolveResult.status === "unreachable",
       };
     }
 
@@ -807,6 +875,7 @@ export const downloadByMD5 = async ({
 
     const failedMirrorSource = resolveResult.candidate.mirror.src;
     lastTransferError = transferOutcome.reason;
+    lastTransferTransient = transferOutcome.transient;
     failedMirrorLabels.push(getMirrorLabel(failedMirrorSource));
     remainingCandidates = remainingCandidates.filter(
       (candidate) => candidate.mirror.src !== failedMirrorSource
@@ -816,5 +885,6 @@ export const downloadByMD5 = async ({
   return {
     status: "failed",
     reason: `download failed on ${failedMirrorLabels.join(", ")}: ${lastTransferError}`,
+    transient: lastTransferTransient,
   };
 };

@@ -319,6 +319,15 @@ export const scihubSource: Source = {
     const failures: string[] = [];
     let challenged = false;
 
+    // Still in a captcha cooldown on this way out: say so at once. Sitting the
+    // minute out held the worker - and, when lookups asked every source
+    // together, a DOI LibGen had already answered - in "resolving", and since
+    // Sci-Hub now challenges automated requests outright, the wait bought
+    // nothing but another challenge.
+    if (scihubCooldownUntil(context.proxy) > Date.now()) {
+      return { status: "error", message: "Sci-Hub asked for a captcha; try again later" };
+    }
+
     // Once per search, not once per host. A search reaches a second host only
     // when the first was challenged or unreachable, so it is worth at most two
     // requests; it is a queue draining ninety-odd DOIs that trips the captcha,
@@ -357,7 +366,7 @@ export const scihubSource: Source = {
     }
 
     if (challenged) {
-      return { status: "error", message: "Sci-Hub asked for a captcha; try again in a minute" };
+      return { status: "error", message: "Sci-Hub asked for a captcha; try again later" };
     }
 
     return { status: "error", message: `Couldn't reach Sci-Hub (${failures.join(", ")})` };

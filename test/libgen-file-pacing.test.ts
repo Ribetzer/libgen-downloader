@@ -9,6 +9,7 @@ import {
   libgenFileCooldownUntil,
   libgenFileWaitMs,
   paceLibgenFile,
+  readBusyPage,
   readFileLimit,
   resetLibgenFilePacing,
 } from "../src/api/data/libgen-file-pacing";
@@ -247,5 +248,86 @@ describe("downloadFromURL", () => {
     await downloadFromURL({ downloadURL: "https://arxiv.example/other.pdf", ...noopCallbacks });
 
     expect(waits).toHaveLength(0);
+  });
+});
+
+// LibGen's download server when its database is out of connections, as
+// captured through a lane on 24 September: an HTTP 500, for everyone.
+const BUSY_PAGE_HTML =
+  "<div class=\"alert alert-danger\" role=\"alert\"> 3306. User 'libgen_get' has exceeded the 'max_user_connections' resource (current value: 100)</div>";
+
+describe("readBusyPage", () => {
+  it("recognises the database running out of connections", () => {
+    expect(readBusyPage(BUSY_PAGE_HTML)).toBe(true);
+    expect(readBusyPage("SQLSTATE[HY000] [1040] Too many connections")).toBe(true);
+  });
+
+  it("leaves other pages alone", () => {
+    expect(readBusyPage(LIMIT_PAGE)).toBe(false);
+    expect(readBusyPage("<h1>Internal Server Error</h1>")).toBe(false);
+  });
+});
+
+describe("downloadByMD5 against an overloaded LibGen", () => {
+  const candidate = {
+    mirror: { src: "https://first.example/", type: "libgen-plus" as const },
+    adapter: new LibgenPlusAdapter("https://first.example/"),
+  };
+
+  it("waits out the server being overloaded without spending attempts", async () => {
+    await recordWaits();
+    let fileRequests = 0;
+    mockFetch(async (input) => {
+      if (input.toString().includes("/ads.php")) {
+        return new Response(detailPage);
+      }
+
+      fileRequests += 1;
+      // More overloaded answers than there are attempts.
+      if (fileRequests <= 8) {
+        return new Response(BUSY_PAGE_HTML, { status: 500 });
+      }
+
+      return fileResponse();
+    });
+    discardWrites();
+    const retryMessages: string[] = [];
+
+    const outcome = await downloadByMD5({
+      md5: MD5,
+      candidates: [candidate],
+      ...noopCallbacks,
+      onRetry: (message) => retryMessages.push(message),
+      retryDelayMs: 0,
+    });
+
+    expect(outcome.status).toBe("downloaded");
+    expect(retryMessages[0]).toContain("LibGen's server is overloaded");
+    expect(retryMessages[0]).toContain("not counted as an attempt");
+  });
+
+  it("says a page came back instead of the file, rather than a missing header", async () => {
+    mockFetch(async (input) => {
+      if (input.toString().includes("/ads.php")) {
+        return new Response(detailPage);
+      }
+
+      return new Response("<html><title>Temporarily unavailable</title></html>", {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    });
+    discardWrites();
+
+    const outcome = await downloadByMD5({
+      md5: MD5,
+      candidates: [candidate],
+      ...noopCallbacks,
+      retryDelayMs: 0,
+    });
+
+    expect(outcome).toMatchObject({ status: "failed", transient: true });
+    expect(outcome.status === "failed" && outcome.reason).toContain(
+      "LibGen sent a page instead of the file: Temporarily unavailable"
+    );
   });
 });

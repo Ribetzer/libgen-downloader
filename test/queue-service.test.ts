@@ -755,3 +755,88 @@ describe("QueueService working on several items at once", () => {
     expect(store.get(first.id)?.status).toBe("resolving");
   });
 });
+
+describe("deferring transient failures", () => {
+  it("keeps a deferred row from every worker until its time comes", () => {
+    const item = store.add({ md5: MD5 });
+    const updatedBefore = store.get(item.id)?.updatedAt;
+
+    store.defer(item.id, 3_600_000, "LibGen's server is overloaded - trying again later");
+
+    expect(store.get(item.id)).toMatchObject({ status: "queued", deferrals: 1 });
+    expect(store.get(item.id)?.retryAt).not.toBe("");
+    expect(store.get(item.id)?.updatedAt).toBe(updatedBefore);
+    expect(store.claimNext()).toBeUndefined();
+
+    // Its time has come: a zero delay puts it at "now".
+    store.defer(item.id, 0, "again");
+    expect(store.claimNext()?.id).toBe(item.id);
+  });
+
+  it("clears the wait when retried by hand", () => {
+    const item = store.add({ md5: MD5 });
+    store.defer(item.id, 3_600_000, "waiting");
+    store.update(item.id, { status: "failed" });
+
+    expect(store.requeue(item.id)).toBe(true);
+    expect(store.get(item.id)).toMatchObject({ retryAt: "", deferrals: 0 });
+    expect(store.claimNext()?.id).toBe(item.id);
+  });
+
+  it("defers an overloaded server instead of failing, then fails once the waits run out", async () => {
+    // Each pass runs a transfer's six attempts; their backoff is real seconds,
+    // so `delay` is stubbed to return at once, as the download tests do.
+    const utilities = await import("../src/utilities");
+    mock.module("../src/utilities", () => ({ ...utilities, delay: async () => {} }));
+
+    // Every file request answered with a bad gateway, as LibGen's server did
+    // for hours on 24 September.
+    mockFetch(async (input) => {
+      if (input.toString().includes("/ads.php")) {
+        return new Response(detailPage);
+      }
+
+      return new Response("<h1>Internal Server Error</h1>", { status: 502 });
+    });
+
+    const queue = createQueue({ deferScheduleMs: [0, 0] });
+    const item = store.add({ md5: MD5, title: "Busy" });
+
+    // Three passes: two deferrals, then the schedule is spent.
+    for (let pass = 0; pass < 3; pass++) {
+      const idle = waitForIdle(queue);
+      queue.start();
+      await idle;
+    }
+
+    expect(store.get(item.id)).toMatchObject({ status: "failed", deferrals: 2 });
+    expect(store.get(item.id)?.error).toContain("still failing after being retried");
+  });
+
+  it("fails a file every mirror says it has no record of, at once", async () => {
+    mockFetch(async () => new Response("<html>no record</html>"));
+
+    const queue = createQueue({ deferScheduleMs: [0, 0] });
+    const idle = waitForIdle(queue);
+    const item = queue.add({ md5: MD5 });
+    await idle;
+
+    expect(store.get(item.id)).toMatchObject({ status: "failed", deferrals: 0 });
+  });
+
+  it("defers a DOI lookup that could not be completed", async () => {
+    const queue = createQueue({
+      deferScheduleMs: [3_600_000],
+      resolveDOI: async () => ({
+        reason: "nothing found yet - Sci-Hub asked for a captcha",
+        transient: true,
+      }),
+    });
+    const idle = waitForIdle(queue);
+    const item = queue.add({ doi: "10.1145/1" });
+    await idle;
+
+    expect(store.get(item.id)).toMatchObject({ status: "queued", deferrals: 1 });
+    expect(store.get(item.id)?.error).toContain("trying again later");
+  });
+});

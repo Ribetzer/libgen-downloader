@@ -8,7 +8,7 @@ import { LaneService, parseProxyList } from "./lane-service";
 import { MetadataService } from "./metadata-service";
 import { MirrorService } from "./mirror-service";
 import { QueueService } from "./queue-service";
-import { runSearch, SOURCES } from "./search-service";
+import { findFilesForDOI, runSearch } from "./search-service";
 import { StorageService } from "./storage-service";
 // Straight from package.json: importing ../index would run the CLI entry point.
 import packageJson from "../../package.json";
@@ -264,7 +264,7 @@ interface QueueRequestItem {
 async function resolveRequestedItem(
   item: QueueRequestItem,
   proxy?: string
-): Promise<NewQueueItem | { reason: string }> {
+): Promise<NewQueueItem | { reason: string; transient?: boolean }> {
   const requestedDOI = (item.doi || "").trim();
   const requestedURL = (item.url || "").trim();
 
@@ -288,22 +288,21 @@ async function resolveRequestedItem(
     return { reason: "no usable md5, url or doi" };
   }
 
-  const outcome = await runSearch(mirrors, requestedDOI, 1, SOURCES, proxy);
-  if (outcome.status === "error") {
-    return { reason: outcome.message };
-  }
+  const { items, unanswered } = await findFilesForDOI(mirrors, requestedDOI, proxy);
 
   // A DOI can name several files - different scans of the same book, say -
-  // and now several libraries too. The first is LibGen's best match when it
-  // has one, and Sci-Hub's copy when it does not.
-  const [first] = outcome.items;
+  // and several libraries too: LibGen's best match when it has one, and
+  // Sci-Hub's copy when it does not.
+  const [first] = items;
   if (!first) {
     // "No file anywhere" only when every source actually answered. A source
     // that could not be asked - Sci-Hub wanting a captcha, most often - may
-    // well hold it, and saying otherwise sends the paper to be given up on.
-    if (outcome.notes.length > 0) {
-      const unanswered = outcome.notes.map((note) => note.message).join("; ");
-      return { reason: `nothing found yet for ${requestedDOI} - ${unanswered}; retry later` };
+    // well hold it: that is worth asking again later, not giving up on.
+    if (unanswered.length > 0) {
+      return {
+        reason: `nothing found yet for ${requestedDOI} - ${unanswered.join("; ")}`,
+        transient: true,
+      };
     }
 
     return { reason: `no file on any source for ${requestedDOI}` };
@@ -412,6 +411,15 @@ const handleRequest = async (request: Request): Promise<Response> => {
   }
 
   if (pathname === "/api/config") {
+    // `?recheck` is the banner's "check again": look at the disk now rather
+    // than answer from the cache, and set the queue going if it is back.
+    if (url.searchParams.has("recheck")) {
+      storage.forget();
+      if (await storage.isReady()) {
+        queue.start();
+      }
+    }
+
     const state = mirrors.getState();
     const volume = await storage.getState();
     return json({

@@ -428,3 +428,19 @@ header .lane {
   align-items: center;
   color: var(--text);
 }
+
+/* A deferred row: back in the queue, waiting out a busy server or a captcha. */
+.deferred {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--amber);
+}
+
+.error.muted {
+  color: var(--muted);
+}
+
+.open-elsewhere {
+  display: inline-block;
+  margin-top: 4px;
+}

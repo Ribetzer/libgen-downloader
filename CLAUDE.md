@@ -215,10 +215,33 @@ connection.
   than parsing as "no record", and a proxied lane where nothing answers puts
   the item back and is benched for 5 minutes. A 503 or 429 on a file request
   cools the lane down and isn't counted as an attempt.
-- **Resume counts as progress:** the CDN answers `Range` with 206 (it didn't
-  when the transfer code was written). An attempt that leaves more of the
-  file on disk than any before it is neither one of the 6 attempts nor time
-  charged to the 45-minute budget. Only attempts that get nowhere are.
+- **Only a real resume counts as progress.** The CDN has answered `Range` both
+  ways: 206 for a while, then 200 with the whole file again when re-measured
+  on 24 September. A drop after a 206 that left more on disk than ever before
+  is neither an attempt nor time charged to the budget. After a 200, the part
+  was rewritten from zero, so getting further than before is just a luckier
+  restart; it counts, and the message says "restarted from zero".
+- **Overload is a wait, not an attempt.** LibGen's own database runs out of
+  connections for hours at a time: HTTP 500 with *"User 'libgen_get' has
+  exceeded the 'max_user_connections' resource"* (`readBusyPage`). Mid-transfer
+  drops were seen even on an otherwise idle IP, so they are server-side and not
+  caused by our concurrency. An HTML page served with a 200 instead of the file
+  is read the same way, or reported as "LibGen sent a page instead of the file".
+- **Deferral.** A failure that says nothing about the file (`transient` on the
+  failed outcomes of `downloadByMD5`/`downloadFromURL`, and on DOI lookups
+  that couldn't finish) goes back to `queued` with a `retry_at`
+  (`ItemStore.defer`, `DEFER_SCHEDULE_MS`: 30 min, 2 h, 6 h, 12 h). It only
+  becomes `failed` once that schedule is used up. `claimNext` skips rows that
+  aren't due yet, and the lane watcher's once-a-minute `start()` picks them up
+  when they are. A manual Retry (`requeue`) clears the wait. Confirmed
+  "not found" and 4xx still fail at once.
+- **Sci-Hub is asked only when LibGen has nothing** (`findFilesForDOI`).
+  Since September 2026 it puts an ALTCHA challenge in front of every automated
+  request, even the first one from a quiet IP. Asking it alongside LibGen held
+  DOIs that LibGen had already answered in "resolving" for its 60 s cooldown.
+  During a cooldown it now answers at once. Don't solve the challenge
+  programmatically; that defeats the site's bot protection. Failed DOI rows get
+  an "Open on Sci-Hub" link instead.
 - **Sci-Hub's certificate pin is a fallback:** in 2026 its page hosts moved to
   Let's Encrypt, and the pin (the self-signed certificate as the only trust
   anchor) then rejected everything. `fetchSciHub` verifies normally first
