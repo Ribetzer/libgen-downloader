@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { normalizeDOI } from "./edition";
 import { extractMD5 } from "./md5";
 
 const MIRROR_HEADER_PREFIX = "# mirror:";
@@ -63,6 +64,41 @@ export function parseMD5List(contents: string): MD5ListParseResult {
   }
 
   return { md5List, invalidLines, preferredMirror };
+}
+
+export interface IdentifierListParseResult extends MD5ListParseResult {
+  doiList: string[];
+}
+
+/**
+ * An MD5 list that may also hold DOIs, one per line, in any of the forms
+ * `normalizeDOI` accepts. A line is an MD5 first - so a `failed.txt` still
+ * reads exactly as before - and a DOI only when it is not; the DOI is taken
+ * from the line's first word, so a title after it does no harm. DOIs are
+ * case-insensitive, so `10.1145/ABC` and `10.1145/abc` are one entry.
+ */
+export function parseIdentifierList(contents: string): IdentifierListParseResult {
+  const parsed = parseMD5List(contents);
+  const doiList: string[] = [];
+  const invalidLines: InvalidMD5Line[] = [];
+  const seenDOIs = new Set<string>();
+
+  for (const line of parsed.invalidLines) {
+    const doi = normalizeDOI(line.content.split(/\s+/)[0]);
+    if (!doi) {
+      invalidLines.push(line);
+      continue;
+    }
+
+    if (seenDOIs.has(doi.toLowerCase())) {
+      continue;
+    }
+
+    seenDOIs.add(doi.toLowerCase());
+    doiList.push(doi);
+  }
+
+  return { ...parsed, doiList, invalidLines };
 }
 
 export interface ListFileOptions {

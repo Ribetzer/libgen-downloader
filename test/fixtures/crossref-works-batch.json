@@ -1,0 +1,200 @@
+{
+  "status": "ok",
+  "message-type": "work-list",
+  "message-version": "1.0.0",
+  "message": {
+    "facets": {},
+    "total-results": 3,
+    "items": [
+      {
+        "DOI": "10.1145/1073204.1073206",
+        "title": [
+          "Skinning mesh animations"
+        ],
+        "author": [
+          {
+            "given": "Doug L.",
+            "family": "James",
+            "sequence": "first",
+            "affiliation": [
+              {
+                "name": "Carnegie Mellon University"
+              }
+            ],
+            "role": [
+              {
+                "vocabulary": "crossref",
+                "role": "author"
+              }
+            ]
+          },
+          {
+            "given": "Christopher D.",
+            "family": "Twigg",
+            "sequence": "additional",
+            "affiliation": [
+              {
+                "name": "Carnegie Mellon University"
+              }
+            ],
+            "role": [
+              {
+                "vocabulary": "crossref",
+                "role": "author"
+              }
+            ]
+          }
+        ],
+        "issued": {
+          "date-parts": [
+            [
+              2005,
+              7
+            ]
+          ]
+        },
+        "container-title": [
+          "ACM Transactions on Graphics"
+        ],
+        "type": "journal-article"
+      },
+      {
+        "DOI": "10.1109/tg.2024.3497601",
+        "title": [
+          "Will GPT-4 Run <i>DOOM</i>?"
+        ],
+        "author": [
+          {
+            "ORCID": "https://orcid.org/0000-0003-2679-7241",
+            "authenticated-orcid": false,
+            "given": "Adrian",
+            "family": "de Wynter",
+            "sequence": "first",
+            "affiliation": [
+              {
+                "name": "University of York, York, U.K."
+              }
+            ],
+            "role": [
+              {
+                "vocabulary": "crossref",
+                "role": "author"
+              }
+            ]
+          }
+        ],
+        "issued": {
+          "date-parts": [
+            [
+              2025,
+              6
+            ]
+          ]
+        },
+        "container-title": [
+          "IEEE Transactions on Games"
+        ],
+        "type": "journal-article"
+      },
+      {
+        "DOI": "10.1111/cgf.12271",
+        "title": [
+          "Occluder Simplification Using Planar Sections"
+        ],
+        "author": [
+          {
+            "given": "Ari",
+            "family": "Silvennoinen",
+            "sequence": "first",
+            "affiliation": [
+              {
+                "name": "Umbra Software Ltd. Helsinki Finland"
+              },
+              {
+                "name": "Aalto University Helsinki Finland"
+              },
+              {
+                "name": "Remedy Entertainment Ltd. Helsinki Finland"
+              }
+            ],
+            "role": [
+              {
+                "vocabulary": "crossref",
+                "role": "author"
+              }
+            ]
+          },
+          {
+            "given": "Hannu",
+            "family": "Saransaari",
+            "sequence": "additional",
+            "affiliation": [
+              {
+                "name": "Umbra Software Ltd. Helsinki Finland"
+              }
+            ],
+            "role": [
+              {
+                "vocabulary": "crossref",
+                "role": "author"
+              }
+            ]
+          },
+          {
+            "given": "Samuli",
+            "family": "Laine",
+            "sequence": "additional",
+            "affiliation": [
+              {
+                "name": "NVIDIA Research Helsinki Finland"
+              }
+            ],
+            "role": [
+              {
+                "vocabulary": "crossref",
+                "role": "author"
+              }
+            ]
+          },
+          {
+            "given": "Jaakko",
+            "family": "Lehtinen",
+            "sequence": "additional",
+            "affiliation": [
+              {
+                "name": "Aalto University Helsinki Finland"
+              },
+              {
+                "name": "NVIDIA Research Helsinki Finland"
+              }
+            ],
+            "role": [
+              {
+                "vocabulary": "crossref",
+                "role": "author"
+              }
+            ]
+          }
+        ],
+        "issued": {
+          "date-parts": [
+            [
+              2013,
+              12,
+              15
+            ]
+          ]
+        },
+        "container-title": [
+          "Computer Graphics Forum"
+        ],
+        "type": "journal-article"
+      }
+    ],
+    "items-per-page": 100,
+    "query": {
+      "start-index": 0,
+      "search-terms": null
+    }
+  }
+}

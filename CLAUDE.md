@@ -152,6 +152,19 @@ Four invariants worth preserving:
 
 Every remote call is wrapped in `attempt()` (`src/utilities.ts`): 5 tries with 2s delay by default, returns `undefined` instead of throwing. Callers check for `undefined` and surface a warning. Pass `{ attempts, delayMs }` for cheaper probes — mirror lookups use `PROBE_REQ_ATTEMPT_COUNT`.
 
+**LibGen's file CDN allows 15 files per 300 seconds per IP**, and every
+mirror's `get.php` redirects to that same CDN. Going over returns **HTTP 500**
+(not 429) with the page "You have downloaded too much files (15) in the last
+300 seconds". Retrying that at the ordinary backoff and falling through to the
+other mirrors only added to the count, which kept it over the limit, so every
+download in a list failed. Now `transferFile({ libgenFile: true })` spaces
+requests through `paceLibgenFile` (`LIBGEN_FILE_MIN_INTERVAL_MS`, 21s, shared at
+module scope like Sci-Hub's pacer). It also reads the limit page with
+`readFileLimit` and sets a shared cooldown for the window the page names. A VPN
+exit is shared with other people, so the limit can be hit even at this pace;
+the cooldown handles that case. `test/support/setup.ts` (the preload in
+`bunfig.toml`) resets the pacer to an interval of 0 before every test.
+
 Transfers get their own, larger budget: `DOWNLOAD_ATTEMPT_COUNT` (6) per mirror across `MAX_DOWNLOAD_MIRRORS` (4), spaced by `DOWNLOAD_BACKOFF_MS` and clamped in wall-clock terms by `DOWNLOAD_TOTAL_BUDGET_MS` (45 min). **An attempt count is not a time limit** — 24 tries at a few minutes each is hours with the sequential queue blocked behind one file, which is what the budget exists to bound. `THROTTLE_BACKOFF_MS` is separate and much longer: a mirror answering 429/503 is asking for a slower pace, not reporting a dropped connection.
 
 Output storage is checked, not assumed. `StorageService` (`src/server/storage-service.ts`) reads a marker file named by `LIBGEN_VOLUME_MARKER` inside the output directory; unset disables the check. It exists because an unplugged removable disk yields a _writable_ empty bind mount rather than an error, so a write test passes and the downloads vanish. `QueueService.drain()` treats a failed check exactly like having no mirror — return, leaving items `queued` — and the mirror-refresh timer re-reads it, so reconnecting the disk resumes the queue without a restart.
@@ -167,17 +180,48 @@ both the queue and the history, separated by status. `TERMINAL_STATUSES` decides
 which is which, and `recoverInterrupted()` requeues anything left mid-flight by
 a restart.
 
-Failure handling is per row, not per batch. `POST /api/history/retry` takes an
-optional `id`; `POST /api/history/dismiss` marks one row `cancelled` so it
-leaves the failed set **without pretending it succeeded**. `dismiss` is guarded
-to `failed` rows exactly as `cancel` is guarded to `queued` ones.
+Failure handling is per row, not per batch, and a file has **one row**.
+`POST /api/history/retry` (optional `id`) requeues the failed row _in place_
+through `QueueService.retry`. It never inserts a new row, because the old
+insert-on-retry left stale failures behind that "Retry all" kept requeueing.
+`POST /api/history/dismiss` **deletes** the failed row. It used to mark the row
+`cancelled`, which moved it to the top of history. `dismiss` is guarded to
+`failed` rows exactly as `cancel` is guarded to `queued` ones. `QueueService.add`
+reuses a row with the same identity (MD5, else URL): a waiting row is returned
+unchanged, and a failed or cancelled one is requeued. At startup,
+`collapseSuperseded()` clears failures that a download or a later failure has
+superseded.
 
 `POST /api/queue` accepts `{"doi": …}` and `{"url": …}` as well as
 `{"md5": …}`, which is how the paired RAG corpus re-fetches truncated papers
 without a human in the loop. The DOI lookup now covers Sci-Hub as well as
 LibGen, so a paper LibGen never held is still reachable by DOI alone. Retry
-carries `source` and `url` through — without them a retried arXiv row would
-come back as an MD5-less LibGen item and fail at once — and `failed.txt`, which
+requeues the row itself, so its `source` and `url` stay put.
+
+The upload drop zone (`POST /api/queue/md5-list`, `parseIdentifierList`)
+accepts DOIs as well as MD5s, in any form `normalizeDOI` reads: raw
+`10.x/y`, `doi:`, `doi.org/…` or `https://doi.org/…`. A DOI is **not** looked up
+during the upload. It is queued as a DOI-only row, and `QueueService.lookUpDOI`
+resolves it when its turn comes, through the injected `resolveDOI`, which is the
+same lookup `{"doi": …}` gets. So a list of thousands answers at once, and a DOI
+that no source holds becomes an ordinary failed row that can be retried. Rows
+are also matched by DOI (case-insensitive) when they have no MD5 or URL.
+`resolveRequestedItem` is a function declaration on purpose: the queue can
+start draining before the module body reaches it.
+
+Listed rows carry `origin: "list"`. The UI shows a LIST chip, the DOI as it was
+written, and underneath it what the DOI is. `MetadataService` looks that up in
+the background, separately from downloading, and stores it as JSON in `meta`.
+It uses Crossref's list endpoint first (`filter=doi:a,doi:b`, 50 DOIs per
+request), then doi.org content negotiation (CSL JSON) for anything Crossref
+lacks. doi.org covers DataCite DOIs such as Zenodo and Eurographics. A doi.org
+404 is recorded as `missing`, which is how typos in a list show up. **OpenAlex
+is not used**: without an API key it draws on a daily budget shared per IP,
+which was already exhausted at the VPN exit. `setMetadata` leaves `updated_at`
+alone, so history order doesn't change. Updates reach the browser as
+`items-refreshed` batches that are merged in place rather than reloaded. An
+optional `LIBGEN_CONTACT_EMAIL` puts a `mailto:` in the User-Agent, which moves
+requests into Crossref's faster "polite" pool. `failed.txt`, which
 is an MD5 list, writes URL-only rows as comments rather than as lines that
 would be rejected on the way back in.
 

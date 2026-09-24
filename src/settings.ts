@@ -126,3 +126,30 @@ export const SCIHUB_CHALLENGE_COOLDOWN_MS = 60_000;
 // page at a time with a cap that keeps a whole-journal query bounded.
 export const ISSUE_PAGE_SIZE = 100;
 export const MAX_ISSUE_PAGES = 20;
+
+// Title/author lookups for DOIs that arrive in an uploaded list. Crossref's
+// list endpoint takes many `doi:` filters at once, so a whole list is a few
+// dozen requests; 50 keeps the URL well inside what the API accepts.
+export const METADATA_BATCH_SIZE = 50;
+
+// doi.org answers the DOIs Crossref does not hold (DataCite: Zenodo,
+// Eurographics), one request each. Both are someone else's free service and
+// this is a background job, so it asks slowly rather than as fast as allowed.
+export const METADATA_REQUEST_INTERVAL_MS = 1000;
+
+// After a lookup that failed for network reasons rather than for a missing
+// record. The DOIs stay pending and are asked about again after this.
+export const METADATA_RETRY_MS = 60_000;
+
+// LibGen's file CDN (every mirror's get.php redirects to the same one) allows
+// 15 files per 300 seconds per IP, and says so in an HTTP 500 page: "You have
+// downloaded too much files (15) in the last 300 seconds, please wait". A
+// sequential queue of small papers finishes one every few seconds, so without
+// spacing it trips the limit within minutes - and every retry of a refused
+// request counts as another file, which kept the counter pinned and failed
+// every download. One request per 21s stays under 15 per 300s with a margin.
+export const LIBGEN_FILE_MIN_INTERVAL_MS = 21_000;
+
+// How long to stand back when the limit page does not say. It normally does,
+// and its own window is used instead.
+export const LIBGEN_FILE_LIMIT_WINDOW_MS = 300_000;

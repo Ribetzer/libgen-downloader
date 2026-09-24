@@ -2,13 +2,17 @@ import { downloadByMD5, downloadFromURL } from "../api/data/download";
 import type { DownloadResult } from "../api/models/download-result";
 import { downloadRequestInit } from "../api/sources";
 import { QUEUE_RETRY_MS } from "../settings";
-import { ItemStore, NewQueueItem, QueueItem } from "./database";
+import { ItemStore, NewQueueItem, QueueItem, TERMINAL_STATUSES } from "./database";
 import { MirrorService } from "./mirror-service";
 import { StorageService } from "./storage-service";
 
 export type QueueEvent =
   | { type: "item-added"; item: QueueItem }
   | { type: "item-updated"; item: QueueItem }
+  // Rows that changed without their status changing - a title and authors
+  // arriving for listed DOIs. Sent in batches, and handled by the browser as
+  // an in-place merge, so thousands of them do not trigger thousands of reloads.
+  | { type: "items-refreshed"; items: QueueItem[] }
   | { type: "queue-idle" };
 
 type Listener = (event: QueueEvent) => void;
@@ -21,6 +25,8 @@ interface QueueServiceArguments {
   retryMs?: number;
   /** Called once per item reaching a terminal state, for notifying elsewhere. */
   onFinished?: (item: QueueItem) => void;
+  /** Looks up a DOI-only item when its turn comes; see `lookUpDOI`. */
+  resolveDOI?: (doi: string) => Promise<NewQueueItem | { reason: string }>;
 }
 
 /**
@@ -41,6 +47,7 @@ export class QueueService {
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private retryMs: number;
   private onFinished: ((item: QueueItem) => void) | undefined;
+  private resolveDOI: QueueServiceArguments["resolveDOI"];
 
   constructor({
     store,
@@ -49,6 +56,7 @@ export class QueueService {
     storage,
     retryMs,
     onFinished,
+    resolveDOI,
   }: QueueServiceArguments) {
     this.store = store;
     this.mirrors = mirrors;
@@ -56,6 +64,7 @@ export class QueueService {
     this.storage = storage;
     this.retryMs = retryMs ?? QUEUE_RETRY_MS;
     this.onFinished = onFinished;
+    this.resolveDOI = resolveDOI;
   }
 
   /**
@@ -106,7 +115,30 @@ export class QueueService {
     this.publish(id, "item-updated");
   }
 
+  /**
+   * Queue a file, reusing its row when there is one to reuse: one already
+   * waiting or in flight is returned as-is, and one that failed or was
+   * cancelled goes back in the queue. A file already downloaded gets a new row
+   * - the disk, not the history, decides whether it is still there.
+   */
   add(entry: NewQueueItem): QueueItem {
+    const existing = this.store.findByIdentity(entry.md5, entry.url, entry.doi);
+    if (existing && !TERMINAL_STATUSES.includes(existing.status)) {
+      return existing;
+    }
+
+    if (existing && (existing.status === "failed" || existing.status === "cancelled")) {
+      // Whoever queued it this time may know more than the first caller did.
+      this.store.update(existing.id, {
+        title: existing.title || entry.title || undefined,
+        doi: existing.doi || entry.doi || undefined,
+        url: existing.url || entry.url || undefined,
+        origin: existing.origin || entry.origin || undefined,
+      });
+      this.retry(existing.id);
+      return this.store.get(existing.id) as QueueItem;
+    }
+
     const item = this.store.add(entry);
     this.emit({ type: "item-added", item });
     this.start();
@@ -115,6 +147,24 @@ export class QueueService {
 
   addMany(entries: NewQueueItem[]): QueueItem[] {
     return entries.map((entry) => this.add(entry));
+  }
+
+  /** Tell listeners that these rows changed in place; see `items-refreshed`. */
+  refreshed(items: QueueItem[]): void {
+    if (items.length > 0) {
+      this.emit({ type: "items-refreshed", items });
+    }
+  }
+
+  /** Put a failed or cancelled item back in the queue as the same row. */
+  retry(id: number): boolean {
+    const retried = this.store.requeue(id);
+    if (retried) {
+      this.publish(id, "item-updated");
+      this.start();
+    }
+
+    return retried;
   }
 
   cancel(id: number): boolean {
@@ -195,9 +245,49 @@ export class QueueService {
     }
   }
 
-  private async process(item: QueueItem): Promise<void> {
-    this.change(item.id, { status: "resolving", error: "", progress: 0 });
+  private async process(queued: QueueItem): Promise<void> {
+    this.change(queued.id, { status: "resolving", error: "", progress: 0 });
 
+    let item: QueueItem | undefined = queued;
+    if (!queued.md5 && !queued.url && queued.doi) {
+      item = await this.lookUpDOI(queued);
+    }
+
+    if (item) {
+      await this.transfer(item);
+    }
+  }
+
+  /**
+   * An item queued by DOI alone is looked up here, when its turn comes, rather
+   * than when it was queued: a list of two thousand DOIs then queues at once,
+   * the lookups keep the same one-at-a-time pace as the downloads, and a DOI
+   * no source holds becomes an ordinary failed row that can be retried.
+   */
+  private async lookUpDOI(item: QueueItem): Promise<QueueItem | undefined> {
+    if (!this.resolveDOI) {
+      this.change(item.id, { status: "failed", error: "no DOI lookup available" });
+      return;
+    }
+
+    const resolved = await this.resolveDOI(item.doi);
+    if ("reason" in resolved) {
+      this.change(item.id, { status: "failed", error: resolved.reason });
+      return;
+    }
+
+    this.change(item.id, {
+      md5: resolved.md5 || undefined,
+      url: resolved.url || undefined,
+      source: resolved.source || undefined,
+      // The DOI's own registered title beats a library's catalogue entry for
+      // naming the file, when the metadata lookup has already found it.
+      title: item.title || item.meta?.title || resolved.title || undefined,
+    });
+    return this.store.get(item.id);
+  }
+
+  private async transfer(item: QueueItem): Promise<void> {
     // The callbacks are the same whichever route the file takes; only the way
     // its location is worked out differs.
     const shared = {

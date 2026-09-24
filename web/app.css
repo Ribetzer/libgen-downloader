@@ -10,6 +10,7 @@
   --red: #f05a5a;
   --amber: #d9a02e;
   --cyan: #3bb3c3;
+  --violet: #a78bfa;
   color-scheme: dark;
 }
 
@@ -248,6 +249,43 @@ tbody tr.owned .title > div:first-child {
    column. */
 td .chip-source {
   margin-right: 8px;
+}
+
+/* A row that came from an uploaded list. Its DOI is shown as written, with
+   what the DOI turned out to be underneath, since a bare DOI says nothing. */
+.chip-source.list {
+  color: var(--violet);
+}
+
+.doi {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 13px;
+}
+
+.meta {
+  margin-top: 3px;
+  font-size: 13px;
+}
+
+.meta .authors,
+.meta .venue {
+  color: var(--muted);
+}
+
+.meta.pending,
+.meta.missing {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.meta.missing {
+  color: var(--amber);
+}
+
+.saved-as {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .filters {

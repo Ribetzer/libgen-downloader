@@ -142,11 +142,41 @@ nothing, which leaves the count stuck at 3 forever.
 
 `POST /api/history/retry` takes an optional `id`. With no body it still retries
 everything, which is right when the failures genuinely are all outstanding.
-`POST /api/history/dismiss` marks a row `cancelled` so it leaves `listFailed`
-and the badge **without pretending it succeeded**.
+`POST /api/history/dismiss` **deletes** the row, so it leaves `listFailed`,
+the badge and the history **without pretending it succeeded**.
 
 Dismiss is guarded to `failed` rows exactly as `cancel` is guarded to `queued`
 ones: neither should reach into work in flight.
+
+### One row per file: retry requeues, it does not insert
+
+Retry used to go through `addMany`, which INSERTs. The failed row stayed
+`failed` next to its replacement, kept its Retry and X buttons, and every later
+"Retry all" queued it again. Whether a file is already on disk is only known
+once a mirror answers with its name, so a mirror returning HTTP 500 turned a
+paper that was already downloaded into yet another failure. A live history of
+500 rows had 197 failures, and **122 of them were for papers another row had
+downloaded**; one MD5 had four failures around a success. Dismiss made it
+worse: it set `cancelled` and touched `updated_at`, and history sorts by
+`updated_at DESC`, so the dismissed row jumped to the top, above the download,
+where it looked as if that download had been cancelled.
+
+Now:
+
+- `ItemStore.requeue(id)` puts a `failed`/`cancelled` row back to `queued` in
+  place. Both retry routes use it through `QueueService.retry`. Its old id
+  sorts first in `takeNextQueued`, so a retried file goes next, which is what
+  pressing Retry means.
+- `QueueService.add` checks `findByIdentity` (MD5, else URL) first. If a row
+  is waiting or in flight, it is returned and nothing is inserted. A failed or
+  cancelled row is requeued. A `downloaded`/`skipped` file gets a new row,
+  because the disk, not the history, says whether it is still there. That
+  covers re-queueing from search, DOI posts and MD5-list uploads as well as
+  Retry.
+- `collapseSuperseded()` runs at every start. It deletes failed/cancelled rows
+  for files another row downloaded, and all but the newest failure of one file.
+  It is idempotent, so it only matters for histories written before this
+  change.
 
 ### Interrupted work is requeued on boot
 
@@ -197,8 +227,9 @@ received LibGen's rows only. Silently: a filter drops things without comment.
 `withIdentity` keeps a row with an MD5 **or** a URL and drops only what has
 neither. The queue carries both (`source`, `url` columns, added by ALTER TABLE)
 and `QueueService` branches once: MD5 → `downloadByMD5`, URL → `downloadFromURL`.
-Retry has to carry `source` and `url` through as well, or a retried arXiv row
-comes back as an MD5-less LibGen item and fails immediately.
+Retry requeues the row itself, so `source` and `url` stay on it. When retry
+built a new row, forgetting to copy them made a retried arXiv row come back as
+an MD5-less LibGen item that failed immediately.
 
 `failed.txt` is an MD5 list, so URL-only rows are written as `#` comments
 rather than as lines that would be rejected on the way back in.

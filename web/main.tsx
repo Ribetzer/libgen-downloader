@@ -21,6 +21,10 @@ interface QueueItem {
   url: string;
   doi: string;
   title: string;
+  /** "list" for a row from an uploaded list. */
+  origin: string;
+  /** What the DOI is, for a listed row; absent while still being looked up. */
+  meta?: DOIMetadata;
   status: string;
   filename: string;
   mirror: string;
@@ -29,6 +33,14 @@ interface QueueItem {
   total: number;
   createdAt: string;
   updatedAt: string;
+}
+
+interface DOIMetadata {
+  status: "found" | "missing";
+  title?: string;
+  authors?: string[];
+  year?: number;
+  venue?: string;
 }
 
 interface SearchItem {
@@ -115,6 +127,42 @@ const SourceChip = ({ source }: { source: string }) => (
   <span className={`chip-source ${source}`}>{sourceLabel(source)}</span>
 );
 
+/** "Ada Lovelace, Alan Turing, Grace Hopper +2" - enough to recognise a paper by. */
+const formatAuthors = (authors: string[] = []): string => {
+  const shown = authors.slice(0, 3).join(", ");
+  if (authors.length > 3) {
+    return `${shown} +${authors.length - 3}`;
+  }
+
+  return shown;
+};
+
+/**
+ * The line under a listed DOI saying what it is. Absent metadata means the
+ * lookup has not got to it yet; `missing` means no registry knows the DOI,
+ * which is nearly always a typo in the list.
+ */
+const MetaLine = ({ item }: { item: QueueItem }) => {
+  if (!item.meta) {
+    return <div className="meta pending">looking up title…</div>;
+  }
+
+  if (item.meta.status === "missing") {
+    return <div className="meta missing">no record for this DOI - check it for a typo</div>;
+  }
+
+  const details = [formatAuthors(item.meta.authors), item.meta.venue, item.meta.year]
+    .filter(Boolean)
+    .join(" · ");
+
+  return (
+    <div className="meta">
+      {item.meta.title}
+      {details && <span className="authors"> — {details}</span>}
+    </div>
+  );
+};
+
 const ItemRows = ({
   items,
   onCancel,
@@ -139,12 +187,27 @@ const ItemRows = ({
             <Chip status={item.status} />
           </td>
           <td className="title">
-            <div>
-              {item.source !== "libgen" && <SourceChip source={item.source} />}
-              {item.filename || item.title || (
-                <span className="md5">{item.md5 || item.url || item.doi}</span>
-              )}
-            </div>
+            {item.origin === "list" && (
+              <>
+                <div>
+                  <span className="chip-source list">list</span>
+                  {item.source !== "libgen" && <SourceChip source={item.source} />}
+                  {item.doi && <span className="doi">{item.doi}</span>}
+                  {!item.doi &&
+                    (item.filename || item.title || <span className="md5">{item.md5}</span>)}
+                </div>
+                {item.doi && <MetaLine item={item} />}
+                {item.doi && item.filename && <div className="saved-as">{item.filename}</div>}
+              </>
+            )}
+            {item.origin !== "list" && (
+              <div>
+                {item.source !== "libgen" && <SourceChip source={item.source} />}
+                {item.filename || item.title || (
+                  <span className="md5">{item.md5 || item.url || item.doi}</span>
+                )}
+              </div>
+            )}
             {item.status === "downloading" && (
               <div className="progress">
                 <div style={{ width: `${percentage}%` }} />
@@ -171,7 +234,7 @@ const ItemRows = ({
               {onDismiss && item.status === "failed" && (
                 <button
                   className="small dismiss"
-                  title="Remove from the failed list without retrying"
+                  title="Remove from history"
                   onClick={() => onDismiss(item.id)}
                 >
                   &#215;
@@ -228,6 +291,7 @@ const App = () => {
       const payload = JSON.parse(event.data) as
         | { type: "snapshot"; items: QueueItem[] }
         | { type: "item-added" | "item-updated"; item: QueueItem }
+        | { type: "items-refreshed"; items: QueueItem[] }
         | { type: "queue-idle" };
 
       if (payload.type === "snapshot") {
@@ -237,6 +301,17 @@ const App = () => {
 
       if (payload.type === "queue-idle") {
         void loadHistory();
+        return;
+      }
+
+      // Metadata arriving for listed rows: merged in place, wherever the row
+      // is, without reloading anything - a list of thousands sends many batches.
+      if (payload.type === "items-refreshed") {
+        const changed = new Map(payload.items.map((item) => [item.id, item]));
+        const merge = (items: QueueItem[]) =>
+          items.map((item) => ({ ...item, meta: changed.get(item.id)?.meta ?? item.meta }));
+        setQueueItems(merge);
+        setHistory(merge);
         return;
       }
 
@@ -338,12 +413,28 @@ const App = () => {
     });
     const payload = (await response.json()) as {
       added: QueueItem[];
+      md5Count: number;
+      doiCount: number;
       invalidLines: { lineNumber: number; content: string }[];
     };
 
-    let note = `Queued ${payload.added.length} MD5${payload.added.length === 1 ? "" : "s"}`;
+    const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
+    const parts: string[] = [];
+    if (payload.md5Count > 0) {
+      parts.push(plural(payload.md5Count, "MD5"));
+    }
+    if (payload.doiCount > 0) {
+      // Looked up by the queue as each one's turn comes, not here.
+      parts.push(`${plural(payload.doiCount, "DOI")} (looked up as each comes up)`);
+    }
+
+    let note = `Queued ${parts.join(" and ") || "nothing"}`;
     if (payload.invalidLines.length > 0) {
-      note += `, skipped ${payload.invalidLines.length} unreadable line(s)`;
+      const sample = payload.invalidLines
+        .slice(0, 3)
+        .map((line) => `line ${line.lineNumber}: ${line.content}`)
+        .join("; ");
+      note += `, skipped ${plural(payload.invalidLines.length, "unreadable line")} (${sample}${payload.invalidLines.length > 3 ? "; …" : ""})`;
     }
     setUploadNote(note);
   }, []);
@@ -586,7 +677,7 @@ const App = () => {
                 }
               }}
             >
-              Drop an MD5 list here, or click to choose one
+              Drop a list of MD5s or DOIs here, or click to choose one
             </div>
             <input
               ref={fileInput}

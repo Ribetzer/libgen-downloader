@@ -1,0 +1,47 @@
+{
+  "type": "",
+  "id": "https://doi.org/10.2312/sr.20251176",
+  "categories": [
+    "CCS Concepts: Computing methodologies -&gt; Rendering; Ray tracing",
+    "Computing methodologies",
+    "Rendering",
+    "Ray tracing"
+  ],
+  "author": [
+    {
+      "family": "Schüßler",
+      "given": "Vincent"
+    },
+    {
+      "family": "Hanika",
+      "given": "Johannes"
+    },
+    {
+      "family": "Sauvage",
+      "given": "Basile"
+    },
+    {
+      "family": "Dischler",
+      "given": "Jean-Michel"
+    },
+    {
+      "family": "Dachsbacher",
+      "given": "Carsten"
+    }
+  ],
+  "issued": {
+    "date-parts": [
+      [
+        2025
+      ]
+    ]
+  },
+  "abstract": "Procedural texturing is crucial for adding details in large-scale rendering. Typically, procedural textures are represented as computational graphs that artists can edit. However, as scene and graph complexity grow, evaluating these graphs becomes increasingly expensive for the rendering system. Performance is greatly affected by the evaluation strategy: Precomputing textures into high resolution maps is straightforward but can be inefficient, while shade-on-hit architectures and tile-based caches improve efficiency by evaluating only necessary data. However, the ideal choice of strategy depends on the application context. We present a new method to dynamically select which texture graph nodes to cache within a rendering system that supports filtered texture graph evaluation and tile-based caching. Our method allows us to construct an optimized evaluation strategy for each scene. Cache-friendly nodes are identified using data-driven predictions based on statistics of requested texture footprints, gathered during a profiling phase. We develop a statistical model that fits profiling data and predicts how caching specific nodes affects evaluation efficiency and storage demands. Our approach can be directly integrated into a rendering system or used to analyze renderer data, helping practitioners to optimize performance in their workflows.",
+  "container-title": "Eurographics Symposium on Rendering",
+  "DOI": "10.2312/SR.20251176",
+  "edition": "1176",
+  "publisher": "The Eurographics Association",
+  "title": "Selective Caching in Procedural Texture Graphs for Path Tracing",
+  "URL": "https://diglib.eg.org/handle/10.2312/sr20251176",
+  "copyright": "Creative Commons Attribution 4.0 International"
+}
