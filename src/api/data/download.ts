@@ -421,8 +421,13 @@ const transferFile = async ({
   let lastError = "unknown error";
   // Learned from the first attempt, then reused to resume the later ones.
   let partPath: string | undefined;
+  // Time spent sitting out LibGen's file limit, which the time budget does not
+  // count: the limit is per IP, and a VPN exit shares it with strangers, so an
+  // item can be refused for an hour through no fault of its own.
+  let limitedMs = 0;
 
   for (let index = 0; index < DOWNLOAD_ATTEMPT_COUNT; index++) {
+    let limited = false;
     let waitMs = backoffMs[Math.min(index, backoffMs.length - 1)];
     let attemptBytes = 0;
     let attemptTotal = 0;
@@ -455,6 +460,7 @@ const transferFile = async ({
           if (limit) {
             noteLibgenFileLimit(limit.windowMs);
             waitMs = limit.windowMs;
+            limited = true;
             let quota = `${limit.windowMs / 1000}s`;
             if (limit.files) {
               quota = `${limit.files} files per ${quota}`;
@@ -495,6 +501,20 @@ const transferFile = async ({
     } catch (error: unknown) {
       lastError = (error as Error)?.message || "unknown error";
 
+      // A refusal under the file limit says nothing about this file, so it is
+      // not an attempt and its wait is not charged to the budget: the item
+      // waits the window out rather than failing for being in a busy queue.
+      // The wait itself is `paceLibgenFile`'s, at the top of the next pass -
+      // the cooldown is shared, and sleeping here as well would wait twice.
+      if (limited) {
+        limitedMs += waitMs;
+        index -= 1;
+        onRetry?.(
+          `${lastError} - waiting ${Math.round(waitMs / 1000)}s for it to clear, not counted as an attempt`
+        );
+        continue;
+      }
+
       if (index + 1 === DOWNLOAD_ATTEMPT_COUNT) {
         break;
       }
@@ -502,7 +522,7 @@ const transferFile = async ({
       // Attempts alone bound the number of tries, not how long they take. A
       // large file on a slow link can spend hours here with the queue stuck
       // behind it, so stop starting new ones once the budget is gone.
-      if (deadline !== undefined && Date.now() + waitMs >= deadline) {
+      if (deadline !== undefined && Date.now() + waitMs >= deadline + limitedMs) {
         lastError = `${lastError} (${describeProgress(attemptBytes, attemptTotal)}), gave up: out of time`;
         break;
       }

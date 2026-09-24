@@ -146,18 +146,49 @@ describe("downloadByMD5 at LibGen's file limit", () => {
 
     expect(outcome.status).toBe("downloaded");
     expect(retryMessages[0]).toContain("LibGen's download limit reached (15 files per 300s)");
-    expect(retryMessages[0]).toContain("retrying in 300s");
-    expect(waits).toContain(300_000);
+    expect(retryMessages[0]).toContain("waiting 300s for it to clear, not counted as an attempt");
+    expect(waits.some((ms) => ms > 290_000)).toBe(true);
     expect(fileRequests).toBe(2);
   });
 
   it("sets a cooldown every later LibGen file request honours", async () => {
+    await recordWaits();
+    let fileRequests = 0;
     mockFetch(async (input) => {
       if (input.toString().includes("/ads.php")) {
         return new Response(detailPage);
       }
 
-      return new Response(LIMIT_PAGE, { status: 500 });
+      fileRequests += 1;
+      if (fileRequests === 1) {
+        return new Response(LIMIT_PAGE, { status: 500 });
+      }
+
+      return fileResponse();
+    });
+    discardWrites();
+
+    await downloadByMD5({ md5: MD5, candidates: [candidate], ...noopCallbacks, retryDelayMs: 0 });
+
+    expect(libgenFileCooldownUntil()).toBeGreaterThan(Date.now() + 290_000);
+  });
+
+  it("waits out any number of refusals, spending neither attempts nor budget", async () => {
+    // A VPN exit shares the limit with strangers, so refusals can run on far
+    // past the six attempts and the time budget - which used to fail the item.
+    const waits = await recordWaits();
+    let fileRequests = 0;
+    mockFetch(async (input) => {
+      if (input.toString().includes("/ads.php")) {
+        return new Response(detailPage);
+      }
+
+      fileRequests += 1;
+      if (fileRequests <= 7) {
+        return new Response(LIMIT_PAGE, { status: 500 });
+      }
+
+      return fileResponse();
     });
     discardWrites();
 
@@ -166,12 +197,12 @@ describe("downloadByMD5 at LibGen's file limit", () => {
       candidates: [candidate],
       ...noopCallbacks,
       retryDelayMs: 0,
-      // Spent at once, so the test sees the cooldown without sitting it out.
-      totalBudgetMs: 0,
+      totalBudgetMs: 60_000,
     });
 
-    expect(outcome).toMatchObject({ status: "failed" });
-    expect(libgenFileCooldownUntil()).toBeGreaterThan(Date.now() + 290_000);
+    expect(outcome.status).toBe("downloaded");
+    // One cooldown per refusal, sat out by the pacer before the next request.
+    expect(waits.filter((ms) => ms > 290_000)).toHaveLength(7);
   });
 
   it("leaves a plain server error to the ordinary retry", async () => {
