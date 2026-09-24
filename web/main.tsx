@@ -15,6 +15,9 @@ interface ServerConfig {
   /** Ways out to LibGen, one per VPN connection. */
   lanes?: { key: string; proxied: boolean; ready: boolean; ip: string }[];
   concurrency?: number;
+  annasDomain?: string;
+  annasEnabled?: boolean;
+  openAccessEnabled?: boolean;
 }
 
 interface QueueItem {
@@ -76,6 +79,7 @@ interface SourceNote {
 const SOURCE_LABELS: Record<string, string> = {
   libgen: "LibGen",
   arxiv: "arXiv",
+  openaccess: "Open access",
   scihub: "Sci-Hub",
 };
 
@@ -185,11 +189,13 @@ const ItemRows = ({
   onCancel,
   onRetry,
   onDismiss,
+  annasDomain,
 }: {
   items: QueueItem[];
   onCancel?: (id: number) => void;
   onRetry?: (id: number) => void;
   onDismiss?: (id: number) => void;
+  annasDomain: string;
 }) => (
   <>
     {items.map((item) => {
@@ -238,18 +244,28 @@ const ItemRows = ({
             {item.error && (
               <div className={item.status === "queued" ? "error muted" : "error"}>{item.error}</div>
             )}
-            {item.status === "failed" && item.doi && (
-              // Sci-Hub now asks automated requests for a captcha, so what it
-              // holds is one click away in a browser rather than lost.
-              <a
-                className="small open-elsewhere"
-                href={`https://sci-hub.st/${item.doi}`}
-                target="_blank"
-                rel="noreferrer"
-              >
-                Open on Sci-Hub
-              </a>
-            )}
+            {item.doi &&
+              (item.status === "failed" || (item.status === "queued" && item.retryAt)) && (
+                // What the automated routes could not fetch is often one click
+                // away in a browser, where the bot checks - Sci-Hub's captcha,
+                // DDoS-Guard in front of Anna's Archive, Cloudflare in front of a
+                // publisher's open-access PDF - pass as they should.
+                <div className="open-elsewhere">
+                  <a href={`https://doi.org/${item.doi}`} target="_blank" rel="noreferrer">
+                    Publisher page
+                  </a>
+                  <a href={`https://sci-hub.st/${item.doi}`} target="_blank" rel="noreferrer">
+                    Sci-Hub
+                  </a>
+                  <a
+                    href={`https://${annasDomain}/scidb/${item.doi}`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Anna&apos;s Archive
+                  </a>
+                </div>
+              )}
           </td>
           <td className="nowrap">
             {formatBytes(item.progress)}
@@ -717,7 +733,11 @@ const App = () => {
           {queueItems.length > 0 && (
             <table>
               <tbody>
-                <ItemRows items={queueItems} onCancel={(id) => void cancel(id)} />
+                <ItemRows
+                  items={queueItems}
+                  onCancel={(id) => void cancel(id)}
+                  annasDomain={config?.annasDomain || "annas-archive.gl"}
+                />
               </tbody>
             </table>
           )}
@@ -779,6 +799,7 @@ const App = () => {
                   items={history}
                   onRetry={(id) => void retryOne(id)}
                   onDismiss={(id) => void dismissOne(id)}
+                  annasDomain={config?.annasDomain || "annas-archive.gl"}
                 />
               </tbody>
             </table>

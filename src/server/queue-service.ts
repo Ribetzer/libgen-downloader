@@ -1,4 +1,5 @@
 import { downloadByMD5, DownloadLane, downloadFromURL } from "../api/data/download";
+import { DEFAULT_ANNAS_DOMAIN, fetchAnnasDownloadURL } from "../api/sources/annas-archive";
 import { DIRECT_LANE } from "../api/data/libgen-file-pacing";
 import type { DownloadResult } from "../api/models/download-result";
 import { downloadRequestInit } from "../api/sources";
@@ -44,6 +45,12 @@ interface QueueServiceArguments {
   ) => Promise<NewQueueItem | { reason: string; transient?: boolean }>;
   /** Waits before a transient failure is tried again; see DEFER_SCHEDULE_MS. */
   deferScheduleMs?: number[];
+  /**
+   * An Anna's Archive member key, to fetch by MD5 from its fast servers when
+   * LibGen cannot deliver a file. Unset means the fallback is off.
+   */
+  annasKey?: string;
+  annasDomain?: string;
 }
 
 /**
@@ -79,6 +86,10 @@ export class QueueService {
   private onFinished: ((item: QueueItem) => void) | undefined;
   private resolveDOI: QueueServiceArguments["resolveDOI"];
   private deferScheduleMs: number[];
+  private annasKey: string;
+  private annasDomain: string;
+  /** Anna's said the key can fetch nothing more today: leave it until then. */
+  private annasPausedUntil = 0;
 
   constructor({
     store,
@@ -93,6 +104,8 @@ export class QueueService {
     onFinished,
     resolveDOI,
     deferScheduleMs,
+    annasKey,
+    annasDomain,
   }: QueueServiceArguments) {
     this.concurrency = Math.max(1, concurrency ?? 1);
     this.lanes = [{ key: DIRECT_LANE }];
@@ -109,6 +122,8 @@ export class QueueService {
     this.onFinished = onFinished;
     this.resolveDOI = resolveDOI;
     this.deferScheduleMs = deferScheduleMs ?? DEFER_SCHEDULE_MS;
+    this.annasKey = annasKey ?? "";
+    this.annasDomain = annasDomain || DEFAULT_ANNAS_DOMAIN;
   }
 
   /**
@@ -480,6 +495,13 @@ export class QueueService {
       },
     });
 
+    // LibGen could not deliver it. Anna's Archive holds its files under the
+    // same MD5s on servers of its own, so a member key is a second way to
+    // the same file before anything is deferred or failed.
+    if (outcome.status === "failed" && (await this.fetchFromAnnas(item, lane, shared, laneNote))) {
+      return;
+    }
+
     // No mirror answered through a proxied lane: that is the lane, not the
     // file - LibGen answers a busy exit IP with 503s. Back in the queue for
     // another lane, and this one benched for a while.
@@ -505,6 +527,53 @@ export class QueueService {
 
     this.mirrors.notePreferred(outcome.mirror.src);
     this.finish(item.id, outcome.result, outcome.mirror.src);
+  }
+
+  /**
+   * Fetch a LibGen file through Anna's Archive's member API instead. Resolves
+   * true when that delivered it. Off without a key, and for the rest of the
+   * UTC day once Anna's says the key has nothing left - so a day's allowance
+   * running out costs one request, not one per failure.
+   */
+  private async fetchFromAnnas(
+    item: QueueItem,
+    lane: DownloadLane,
+    shared: Omit<Parameters<typeof downloadFromURL>[0], "downloadURL">,
+    laneNote: string
+  ): Promise<boolean> {
+    if (!this.annasKey || !item.md5 || Date.now() < this.annasPausedUntil) {
+      return false;
+    }
+
+    const link = await fetchAnnasDownloadURL(item.md5, this.annasKey, this.annasDomain, lane.proxy);
+    if (link.status === "error") {
+      if (link.exhausted) {
+        const tomorrow = new Date();
+        tomorrow.setUTCHours(24, 0, 0, 0);
+        this.annasPausedUntil = tomorrow.getTime();
+        console.log(`${link.message} - not asking again until ${tomorrow.toISOString()}`);
+      }
+      return false;
+    }
+
+    const outcome = await downloadFromURL({
+      ...shared,
+      downloadURL: link.downloadURL,
+      requestInit: { proxy: lane.proxy },
+      onRetry: (message: string) => {
+        this.change(item.id, {
+          status: "retrying",
+          error: `${laneNote}Anna's Archive: ${message}`,
+          progress: 0,
+        });
+      },
+    });
+    if (outcome.status !== "downloaded") {
+      return false;
+    }
+
+    this.finish(item.id, outcome.result, `https://${this.annasDomain}/`);
+    return true;
   }
 
   /** Records a completed download, whichever route produced it. */

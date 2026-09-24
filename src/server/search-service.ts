@@ -2,6 +2,7 @@ import { parseQuery } from "../api/data/query";
 import { searchSources, type Source, type SourceNote, type SourceResult } from "../api/sources";
 import { arxivSource } from "../api/sources/arxiv";
 import { libgenSource } from "../api/sources/libgen";
+import { openAccessSource } from "../api/sources/open-access";
 import { scihubSource } from "../api/sources/scihub";
 import { MirrorService } from "./mirror-service";
 
@@ -10,7 +11,7 @@ import { MirrorService } from "./mirror-service";
  * because it is the catalogue with the broadest coverage; the other two add to
  * it rather than compete with it.
  */
-export const SOURCES: Source[] = [libgenSource, arxivSource, scihubSource];
+export const SOURCES: Source[] = [libgenSource, arxivSource, openAccessSource, scihubSource];
 
 export type SearchResultItem = SourceResult;
 
@@ -34,11 +35,12 @@ export const withIdentity = (items: SearchResultItem[]): SearchResultItem[] =>
   items.filter((item) => Boolean(item.md5) || Boolean(item.downloadURL));
 
 /**
- * The files a DOI names: LibGen first, and the other sources only when it has
- * nothing. Asking them all at once meant every lookup waited on Sci-Hub too -
- * which now answers automated requests with a captcha - so a DOI LibGen had
- * already found sat in "resolving" and the queue ran at half its workers.
- * `unanswered` says why any source asked gave no answer.
+ * The files a DOI names, asking one source at a time in `SOURCES` order -
+ * LibGen, then legal open-access copies, then Sci-Hub - and stopping at the
+ * first that has one. Asking them all at once meant every lookup waited on
+ * Sci-Hub too - which now answers automated requests with a captcha - so a
+ * DOI LibGen had already found sat in "resolving" and the queue ran at half
+ * its workers. `unanswered` says why any source asked gave no answer.
  */
 export const findFilesForDOI = async (
   mirrors: MirrorService,
@@ -58,12 +60,14 @@ export const findFilesForDOI = async (
     return outcome.items;
   };
 
-  let items = await ask(sources.filter((source) => source.id === "libgen"));
-  if (items.length === 0) {
-    items = await ask(sources.filter((source) => source.id !== "libgen"));
+  for (const source of sources) {
+    const items = await ask([source]);
+    if (items.length > 0) {
+      return { items, unanswered };
+    }
   }
 
-  return { items, unanswered };
+  return { items: [], unanswered };
 };
 
 /**

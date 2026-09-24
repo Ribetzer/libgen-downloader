@@ -441,6 +441,13 @@ header .lane {
 }
 
 .open-elsewhere {
-  display: inline-block;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
   margin-top: 4px;
+  font-size: 12px;
+}
+
+.chip-source.openaccess {
+  color: var(--green);
 }

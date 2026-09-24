@@ -242,6 +242,26 @@ connection.
   During a cooldown it now answers at once. Don't solve the challenge
   programmatically; that defeats the site's bot protection. Failed DOI rows get
   an "Open on Sci-Hub" link instead.
+- **Open access sits between LibGen and Sci-Hub** (`openaccess` source,
+  `src/api/sources/open-access.ts`). It asks Unpaywall, tries every copy it
+  lists (repository copies before the publisher's) and follows a landing
+  page's `citation_pdf_url`. A copy only counts once its server answers
+  `application/pdf`. If none do, it searches arXiv for the title Unpaywall
+  gave, taking only an exact normalised match (the first hit is often a
+  different paper). It needs `LIBGEN_OPEN_ACCESS_EMAIL` (from `.env`, sent
+  only to Unpaywall) and is off without it. It sends an honest User-Agent: HAL
+  served the PDF to that, but a bot check to a browser disguise sent from a
+  VPN lane. Wiley's open-access PDFs sit behind Cloudflare's check, so those
+  rows get browser links instead: publisher page, Sci-Hub, Anna's Archive.
+- **Anna's Archive member API as a fallback for LibGen files.**
+  `/dyn/api/fast_download.json?md5&key` answers scripts with JSON (its pages
+  are behind DDoS-Guard). When `downloadByMD5` fails and `ANNAS_ARCHIVE_KEY`
+  is set (in `.env`, never committed), the queue fetches the same MD5 from
+  Anna's before deferring or failing. A key reported invalid or used up stops
+  the fallback until the next UTC day. It works by MD5 only, so it can't find
+  papers LibGen has never held; SciDB didn't have the missing ones either.
+- **Any page served where a file should be** fails a URL download ("the site
+  sent a page instead of the file: <title>") instead of being saved as a .pdf.
 - **Sci-Hub's certificate pin is a fallback:** in 2026 its page hosts moved to
   Let's Encrypt, and the pin (the self-signed certificate as the only trust
   anchor) then rejected everything. `fetchSciHub` verifies normally first

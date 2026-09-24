@@ -295,3 +295,23 @@ describe("findFilesForDOI", () => {
     expect(unanswered).toEqual(["Sci-Hub asked for a captcha; try again later"]);
   });
 });
+
+describe("findFilesForDOI with open access", () => {
+  it("takes an open-access copy before ever asking Sci-Hub", async () => {
+    const libgen = countingSource("libgen", { status: "ok", items: [] });
+    const openAccess = countingSource("openaccess", {
+      status: "ok",
+      items: [result("openaccess", "from a repository")],
+    });
+    const scihub = countingSource("scihub", { status: "error", message: "captcha" });
+
+    const { items } = await findFilesForDOI(new MirrorService(), "10.1111/cgf.1", undefined, [
+      libgen.source,
+      openAccess.source,
+      scihub.source,
+    ]);
+
+    expect(items.map((found) => found.source)).toEqual(["openaccess"]);
+    expect(scihub.calls).toHaveLength(0);
+  });
+});

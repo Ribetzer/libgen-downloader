@@ -221,3 +221,42 @@ export const arxivSource: Source = {
     };
   },
 };
+
+/** Lower case, letters and digits only: what two spellings of one title share. */
+export const normalizeTitle = (title: string): string =>
+  title
+    .toLowerCase()
+    .normalize("NFKD")
+    .replaceAll(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+
+/**
+ * The arXiv preprint of a published paper, found by its title. A graphics
+ * paper that no library holds often has one. Matched on the whole
+ * normalised title, not on relevance: the first hit of a title search is
+ * frequently a different paper on the same topic, and a wrong PDF filed
+ * under a DOI is worse than none.
+ */
+export const findArxivByTitle = async (title: string): Promise<ArxivRecord | undefined> => {
+  const wanted = normalizeTitle(title);
+  if (wanted.length < 12) {
+    return undefined;
+  }
+
+  await pace();
+  const parameters = new URLSearchParams({
+    search_query: `ti:${JSON.stringify(title.trim())}`,
+    start: "0",
+    max_results: "5",
+  });
+  const response = await fetch(`${ARXIV_API_URL}?${parameters.toString()}`, {
+    headers: { "user-agent": ARXIV_USER_AGENT },
+  });
+  if (!response.ok) {
+    return undefined;
+  }
+
+  return parseArxivFeed(await response.text()).find(
+    (record) => normalizeTitle(record.title) === wanted
+  );
+};

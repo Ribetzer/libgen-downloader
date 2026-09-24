@@ -168,6 +168,12 @@ services:
       # A private-range address works despite the VPN because gluetun's
       # NET_LOCAL keeps those subnets off the tunnel.
       - LIBGEN_CORPUS_URL=${LIBGEN_CORPUS_URL:-}
+      # From .env, so no address or key is ever in this committed file:
+      # Unpaywall's contact for open-access copies, and an Anna's Archive
+      # member key for its fast download API. Empty turns either off.
+      - LIBGEN_OPEN_ACCESS_EMAIL=${LIBGEN_OPEN_ACCESS_EMAIL:-}
+      - ANNAS_ARCHIVE_KEY=${ANNAS_ARCHIVE_KEY:-}
+      - LIBGEN_ANNAS_DOMAIN=${LIBGEN_ANNAS_DOMAIN:-annas-archive.gl}
       # The lanes above, by name and proxy address. The main connection is a
       # lane too, named here. Downloads run two per lane unless
       # LIBGEN_CONCURRENCY says otherwise.

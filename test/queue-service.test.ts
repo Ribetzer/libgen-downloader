@@ -840,3 +840,91 @@ describe("deferring transient failures", () => {
     expect(store.get(item.id)?.error).toContain("trying again later");
   });
 });
+
+describe("Anna's Archive as a second way to a LibGen file", () => {
+  it("fetches by MD5 from Anna's when LibGen answers that it has no record", async () => {
+    const asked: string[] = [];
+    mockFetch(async (input) => {
+      const url = input.toString();
+      asked.push(url);
+      if (url.includes("/dyn/api/fast_download.json")) {
+        return Response.json({
+          download_url: "https://fast.example/file.epub",
+          account_fast_download_info: { downloads_left: 9 },
+        });
+      }
+      if (url === "https://fast.example/file.epub") {
+        return fileResponse();
+      }
+      // Every LibGen mirror: no record.
+      return new Response("<html>no record</html>");
+    });
+
+    const queue = createQueue({ annasKey: "secret", annasDomain: "annas.example" });
+    const idle = waitForIdle(queue);
+    const item = queue.add({ md5: MD5, title: "Rescued" });
+    await idle;
+
+    expect(store.get(item.id)).toMatchObject({
+      status: "downloaded",
+      mirror: "https://annas.example/",
+    });
+    expect(asked.some((url) => url.includes("md5=" + MD5) && url.includes("key=secret"))).toBe(
+      true
+    );
+  });
+
+  it("stops asking for the rest of the day once the key can fetch nothing", async () => {
+    let apiCalls = 0;
+    mockFetch(async (input) => {
+      const url = input.toString();
+      if (url.includes("/dyn/api/fast_download.json")) {
+        apiCalls += 1;
+        return Response.json({ error: "Invalid secret key" }, { status: 401 });
+      }
+      return new Response("<html>no record</html>");
+    });
+
+    const queue = createQueue({ annasKey: "wrong", annasDomain: "annas.example" });
+    const idle = waitForIdle(queue);
+    queue.add({ md5: MD5 });
+    queue.add({ md5: OTHER_MD5 });
+    await idle;
+
+    expect(apiCalls).toBe(1);
+  });
+
+  it("is off without a key", async () => {
+    const asked: string[] = [];
+    mockFetch(async (input) => {
+      asked.push(input.toString());
+      return new Response("<html>no record</html>");
+    });
+
+    const queue = createQueue();
+    const idle = waitForIdle(queue);
+    queue.add({ md5: MD5 });
+    await idle;
+
+    expect(asked.some((url) => url.includes("fast_download"))).toBe(false);
+  });
+});
+
+describe("a page where the file should be", () => {
+  it("fails a URL download that serves HTML rather than saving it as the file", async () => {
+    mockFetch(
+      async () =>
+        new Response("<html><title>Making sure you're not a bot!</title></html>", {
+          headers: { "content-type": "text/html; charset=utf-8" },
+        })
+    );
+
+    const queue = createQueue();
+    const idle = waitForIdle(queue);
+    const item = queue.add({ source: "openaccess", url: "https://repo.example/paper.pdf" });
+    await idle;
+
+    expect(store.get(item.id)).toMatchObject({ status: "failed" });
+    expect(store.get(item.id)?.error).toContain("sent a page instead of the file");
+  });
+});

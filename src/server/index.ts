@@ -13,6 +13,7 @@ import { StorageService } from "./storage-service";
 // Straight from package.json: importing ../index would run the CLI entry point.
 import packageJson from "../../package.json";
 import { QUEUE_CONCURRENCY } from "../settings";
+import { DEFAULT_ANNAS_DOMAIN } from "../api/sources/annas-archive";
 
 const PORT = Number(process.env.LIBGEN_PORT || 8095);
 const OUTPUT_DIRECTORY = process.env.LIBGEN_OUTPUT_DIR || "/downloads";
@@ -31,6 +32,11 @@ const CORPUS_URL = process.env.LIBGEN_CORPUS_URL || "";
 // Sent to Crossref as a contact in the User-Agent, which moves the title and
 // author lookups for listed DOIs into its faster "polite" pool. Optional.
 const CONTACT_EMAIL = process.env.LIBGEN_CONTACT_EMAIL || "";
+// An Anna's Archive member key: LibGen's files by MD5 from its fast servers,
+// tried when LibGen cannot deliver one. Kept in .env, never in the repository;
+// unset turns the fallback off. The domain moves when one is seized.
+const ANNAS_KEY = process.env.ANNAS_ARCHIVE_KEY || "";
+const ANNAS_DOMAIN = process.env.LIBGEN_ANNAS_DOMAIN || DEFAULT_ANNAS_DOMAIN;
 // Other VPN connections to send LibGen downloads through, each an exit IP with
 // its own file allowance: `DE-6=http://172.30.0.11:8888,FI-37=…`. The
 // process's own connection is always a lane too, named by LIBGEN_LANE_NAME.
@@ -103,6 +109,8 @@ const queue = new QueueService({
   outputDirectory: OUTPUT_DIRECTORY,
   storage,
   concurrency: CONCURRENCY,
+  annasKey: ANNAS_KEY,
+  annasDomain: ANNAS_DOMAIN,
   onFinished: notifyFinished,
   // The same lookup `POST /api/queue` does for a `{"doi": …}` body, run by the
   // queue itself for a DOI that arrived in an uploaded list - on the worker's
@@ -434,6 +442,11 @@ const handleRequest = async (request: Request): Promise<Response> => {
       lastRefreshedAt: state.lastRefreshedAt || "",
       lanes: lanes.getStates(),
       concurrency: CONCURRENCY,
+      // For the links on rows that could not be fetched automatically, and to
+      // say which extra routes are switched on. Never the key itself.
+      annasDomain: ANNAS_DOMAIN,
+      annasEnabled: Boolean(ANNAS_KEY),
+      openAccessEnabled: Boolean(process.env.LIBGEN_OPEN_ACCESS_EMAIL),
       error: state.lastError || "",
     });
   }
@@ -540,3 +553,12 @@ const server = Bun.serve({
 console.log(`libgen-downloader web UI on http://localhost:${server.port}`);
 console.log(`downloads -> ${OUTPUT_DIRECTORY} (${CONCURRENCY} at once)`);
 console.log(`config    -> ${CONFIG_DIRECTORY}`);
+let openAccessRoute = "off (no LIBGEN_OPEN_ACCESS_EMAIL)";
+if (process.env.LIBGEN_OPEN_ACCESS_EMAIL) {
+  openAccessRoute = "Unpaywall + arXiv";
+}
+let annasRoute = "off (no ANNAS_ARCHIVE_KEY)";
+if (ANNAS_KEY) {
+  annasRoute = ANNAS_DOMAIN;
+}
+console.log(`open access -> ${openAccessRoute}; Anna's Archive fallback -> ${annasRoute}`);

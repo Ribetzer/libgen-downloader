@@ -17,7 +17,7 @@ import { isSciHubPageHost, sciHubHostNeedsPin, scihubRequestInit } from "./scihu
  * A source answers one question instead: given a query, what have you got?
  */
 
-export type SourceId = "libgen" | "arxiv" | "scihub";
+export type SourceId = "libgen" | "arxiv" | "openaccess" | "scihub";
 
 /**
  * A result from any library.

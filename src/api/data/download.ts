@@ -519,6 +519,15 @@ const transferFile = async ({
         }
       }
 
+      // Anywhere else a page where the file should be is a bot check or a
+      // login wall - saved, it would be an HTML file named .pdf. Not something
+      // waiting fixes, so the item fails with what the page called itself.
+      if (!libgenLane && servedPage) {
+        permanent = true;
+        const body = await downloadStream.text().catch(() => "");
+        throw new Error(`the site sent a page instead of the file: ${pageTitle(body)}`);
+      }
+
       if (!downloadStream.ok) {
         // A mirror too busy for this address says 503 or 429. Through a lane,
         // that is the lane's problem like the file limit is: the lane stands
