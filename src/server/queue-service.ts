@@ -23,6 +23,8 @@ interface QueueServiceArguments {
   outputDirectory: string;
   storage?: StorageService;
   retryMs?: number;
+  /** How many items are worked on at once; 1 when not given. */
+  concurrency?: number;
   /** Called once per item reaching a terminal state, for notifying elsewhere. */
   onFinished?: (item: QueueItem) => void;
   /** Looks up a DOI-only item when its turn comes; see `lookUpDOI`. */
@@ -30,12 +32,18 @@ interface QueueServiceArguments {
 }
 
 /**
- * Drains the queue one item at a time through `downloadByMD5`, which owns
- * resolve, retry, mirror fall-through and cleanup. This layer only decides what
- * to work on next, records the outcome, and tells listeners about it.
+ * Drains the queue through `downloadByMD5`, which owns resolve, retry, mirror
+ * fall-through and cleanup. This layer only decides what to work on next,
+ * records the outcome, and tells listeners about it.
  *
- * Sequential on purpose: the 429/503 backoff exists because the mirrors
- * throttle, and running several transfers at once invites exactly that.
+ * Several items at once, each by its own worker. It used to be strictly one
+ * at a time, on the theory that parallel transfers provoke the mirrors'
+ * throttling. The throttle that actually bites is LibGen's CDN allowing 15
+ * files per 300s per IP - a count of *starts*, which `paceLibgenFile` spaces
+ * whatever the concurrency - while the same CDN serves each connection at a
+ * few tens of KB/s. Measured, three connections moved roughly three times the
+ * bytes of one; and one sequential worker left a 400 MB book holding up two
+ * thousand small papers behind it.
  */
 export class QueueService {
   private store: ItemStore;
@@ -43,7 +51,10 @@ export class QueueService {
   private outputDirectory: string;
   private storage: StorageService | undefined;
   private listeners = new Set<Listener>();
-  private running = false;
+  private workers = 0;
+  private concurrency: number;
+  /** Counts `start()` calls; see `work`. */
+  private requests = 0;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private retryMs: number;
   private onFinished: ((item: QueueItem) => void) | undefined;
@@ -55,9 +66,11 @@ export class QueueService {
     outputDirectory,
     storage,
     retryMs,
+    concurrency,
     onFinished,
     resolveDOI,
   }: QueueServiceArguments) {
+    this.concurrency = Math.max(1, concurrency ?? 1);
     this.store = store;
     this.mirrors = mirrors;
     this.outputDirectory = outputDirectory;
@@ -177,45 +190,61 @@ export class QueueService {
   }
 
   isRunning(): boolean {
-    return this.running;
+    return this.workers > 0;
   }
 
-  /** Safe to call at any time; a second call while draining does nothing. */
+  /**
+   * Safe to call at any time: tops the workers up to the concurrency, and does
+   * nothing when they are all busy. `queue-idle` is sent when the last one
+   * has nothing left to take.
+   */
   start(): void {
-    if (this.running) {
-      return;
-    }
+    this.requests += 1;
+    while (this.workers < this.concurrency) {
+      this.workers += 1;
+      void this.work().then((checkedAt) => {
+        this.workers -= 1;
+        // Work queued between this worker finding nothing and it counting
+        // itself out would otherwise wait: `start()` saw every slot taken
+        // and started nobody. So a worker that ran dry takes another look.
+        if (checkedAt !== undefined && checkedAt !== this.requests) {
+          this.start();
+          return;
+        }
 
-    this.running = true;
-    void this.drain().finally(() => {
-      this.running = false;
-      this.emit({ type: "queue-idle" });
-    });
+        if (this.workers === 0) {
+          this.emit({ type: "queue-idle" });
+        }
+      });
+    }
   }
 
-  private async drain(): Promise<void> {
+  /**
+   * One worker's loop. Resolves with the `start()` count at the moment it
+   * found nothing to take, or `undefined` when it stopped for a reason that
+   * more work would not change - no disk, or nothing it can fetch without a
+   * mirror - in which case the retry timer brings it back.
+   */
+  private async work(): Promise<number | undefined> {
     for (;;) {
-      const item = this.store.takeNextQueued();
-      if (!item) {
-        return;
-      }
-
-      // With no mirror there is nothing to try, and failing every item for a
-      // VPN that is still connecting would be wrong. Leave the queue as it is
-      // and come back to it.
-      //
-      // Only for an item that actually needs a mirror: an arXiv or Sci-Hub row
-      // carries its own URL and has no reason to wait on LibGen being up.
-      if (!item.url && this.mirrors.getCandidates().length === 0) {
-        this.scheduleRetry();
-        return;
-      }
-
-      // Same reasoning one step later: with the output volume unplugged there
-      // is nowhere to write, and an unplugged cable must not fail a queue.
+      // With the output volume unplugged there is nowhere to write, and an
+      // unplugged cable must not fail a queue. Leave it and come back.
       if (this.storage && !(await this.storage.isReady())) {
         this.scheduleRetry();
-        return;
+        return undefined;
+      }
+
+      // With no mirror, only a row carrying its own URL - arXiv, Sci-Hub - can
+      // be fetched. The rest wait rather than fail for a VPN that is still
+      // connecting. Claimed atomically, so no two workers take the same row.
+      const withoutMirror = this.mirrors.getCandidates().length === 0;
+      const checkedAt = this.requests;
+      const item = this.store.claimNext(withoutMirror);
+      if (!item) {
+        if (withoutMirror && this.store.hasQueued()) {
+          this.scheduleRetry();
+        }
+        return checkedAt;
       }
 
       await this.process(item);

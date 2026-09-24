@@ -165,6 +165,21 @@ exit is shared with other people, so the limit can be hit even at this pace;
 the cooldown handles that case. `test/support/setup.ts` (the preload in
 `bunfig.toml`) resets the pacer to an interval of 0 before every test.
 
+The web queue runs **several workers at once** (`QUEUE_CONCURRENCY`, 4 by
+default; override with `LIBGEN_CONCURRENCY`). It used to be strictly
+sequential. The CDN limits files _started_, which the pacer controls whatever
+the concurrency, and it serves each connection at only a few tens of KB/s: in
+one measurement, three connections carried about three times the bytes of one.
+Also, one 400 MB book held up two thousand papers queued behind it. Workers
+take rows with `ItemStore.claimNext`, one `UPDATE … RETURNING` that marks the
+row `resolving`, so no two workers get the same row. With no mirror
+reachable, only rows that carry their own URL are claimed; the rest wait. A
+worker that finds nothing re-checks when it exits, against a count of
+`start()` calls, because work queued in between would otherwise wait for the
+retry timer. In tests that inspect rows as they were queued, pause the queue
+with a missing volume marker (`createPausedQueue`), not with "no mirror",
+which still lets URL rows through.
+
 Transfers get their own, larger budget: `DOWNLOAD_ATTEMPT_COUNT` (6) per mirror across `MAX_DOWNLOAD_MIRRORS` (4), spaced by `DOWNLOAD_BACKOFF_MS` and clamped in wall-clock terms by `DOWNLOAD_TOTAL_BUDGET_MS` (45 min). **An attempt count is not a time limit** — 24 tries at a few minutes each is hours with the sequential queue blocked behind one file, which is what the budget exists to bound. `THROTTLE_BACKOFF_MS` is separate and much longer: a mirror answering 429/503 is asking for a slower pace, not reporting a dropped connection.
 
 Output storage is checked, not assumed. `StorageService` (`src/server/storage-service.ts`) reads a marker file named by `LIBGEN_VOLUME_MARKER` inside the output directory; unset disables the check. It exists because an unplugged removable disk yields a _writable_ empty bind mount rather than an error, so a write test passes and the downloads vanish. `QueueService.drain()` treats a failed check exactly like having no mirror — return, leaving items `queued` — and the mirror-refresh timer re-reads it, so reconnecting the disk resumes the queue without a restart.

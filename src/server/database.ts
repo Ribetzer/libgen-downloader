@@ -235,10 +235,25 @@ export class ItemStore {
     return toQueueItem(row);
   }
 
-  /** The next item to work on, or nothing when the queue is drained. */
-  takeNextQueued(): QueueItem | undefined {
+  /**
+   * Take the next item to work on, marking it `resolving` in the same
+   * statement, so that of several workers asking at once each gets a
+   * different row. `withoutMirror` restricts it to rows that carry their own
+   * URL - what can still be fetched while no LibGen mirror is reachable.
+   */
+  claimNext(withoutMirror = false): QueueItem | undefined {
+    let condition = "status = 'queued'";
+    if (withoutMirror) {
+      condition += " AND COALESCE(url, '') <> ''";
+    }
+
     const row = this.database
-      .query<ItemRow, []>("SELECT * FROM items WHERE status = 'queued' ORDER BY id ASC LIMIT 1")
+      .query<ItemRow, []>(
+        `UPDATE items
+            SET status = 'resolving', error = '', progress = 0, updated_at = datetime('now')
+          WHERE id = (SELECT id FROM items WHERE ${condition} ORDER BY id ASC LIMIT 1)
+          RETURNING *`
+      )
       .get();
 
     if (!row) {
@@ -246,6 +261,15 @@ export class ItemStore {
     }
 
     return toQueueItem(row);
+  }
+
+  /** Whether anything is waiting at all, claimable or not. */
+  hasQueued(): boolean {
+    return Boolean(
+      this.database
+        .query<{ one: number }, []>("SELECT 1 AS one FROM items WHERE status = 'queued' LIMIT 1")
+        .get()
+    );
   }
 
   update(

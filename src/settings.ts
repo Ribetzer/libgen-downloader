@@ -153,3 +153,10 @@ export const LIBGEN_FILE_MIN_INTERVAL_MS = 21_000;
 // How long to stand back when the limit page does not say. It normally does,
 // and its own window is used instead.
 export const LIBGEN_FILE_LIMIT_WINDOW_MS = 300_000;
+
+// Items the web queue works on at once. LibGen's CDN serves each connection at
+// a few tens of KB/s but counts files, not connections, so several transfers
+// multiply throughput while LIBGEN_FILE_MIN_INTERVAL_MS keeps the *starts*
+// under its limit. Four is a cautious start; the server reads
+// LIBGEN_CONCURRENCY to change it without a rebuild.
+export const QUEUE_CONCURRENCY = 4;

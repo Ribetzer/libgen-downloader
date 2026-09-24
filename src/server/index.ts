@@ -11,6 +11,7 @@ import { runSearch } from "./search-service";
 import { StorageService } from "./storage-service";
 // Straight from package.json: importing ../index would run the CLI entry point.
 import packageJson from "../../package.json";
+import { QUEUE_CONCURRENCY } from "../settings";
 
 const PORT = Number(process.env.LIBGEN_PORT || 8095);
 const OUTPUT_DIRECTORY = process.env.LIBGEN_OUTPUT_DIR || "/downloads";
@@ -29,6 +30,8 @@ const CORPUS_URL = process.env.LIBGEN_CORPUS_URL || "";
 // Sent to Crossref as a contact in the User-Agent, which moves the title and
 // author lookups for listed DOIs into its faster "polite" pool. Optional.
 const CONTACT_EMAIL = process.env.LIBGEN_CONTACT_EMAIL || "";
+// How many items download at once; see QUEUE_CONCURRENCY.
+const CONCURRENCY = Number(process.env.LIBGEN_CONCURRENCY) || QUEUE_CONCURRENCY;
 const MIRROR_REFRESH_MS = 60 * 60 * 1000;
 const MIRROR_RETRY_MS = 30 * 1000;
 const HISTORY_LIMIT = 500;
@@ -81,6 +84,7 @@ const queue = new QueueService({
   mirrors,
   outputDirectory: OUTPUT_DIRECTORY,
   storage,
+  concurrency: CONCURRENCY,
   onFinished: notifyFinished,
   // The same lookup `POST /api/queue` does for a `{"doi": …}` body, run by the
   // queue itself for a DOI that arrived in an uploaded list.
@@ -491,5 +495,5 @@ const server = Bun.serve({
 });
 
 console.log(`libgen-downloader web UI on http://localhost:${server.port}`);
-console.log(`downloads -> ${OUTPUT_DIRECTORY}`);
+console.log(`downloads -> ${OUTPUT_DIRECTORY} (${CONCURRENCY} at once)`);
 console.log(`config    -> ${CONFIG_DIRECTORY}`);

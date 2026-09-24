@@ -84,6 +84,14 @@ const createQueue = (options: Partial<ConstructorParameters<typeof QueueService>
   return queue;
 };
 
+/**
+ * A queue that takes nothing: its output disk lacks the marker, which holds
+ * every item - unlike having no mirror, which still lets a URL row through.
+ * For tests that inspect rows as they were queued.
+ */
+const createPausedQueue = () =>
+  createQueue({ storage: new StorageService({ directory: OUTPUT_DIRECTORY, marker: MARKER }) });
+
 beforeEach(() => {
   store = new ItemStore(":memory:");
   // Tests share one output directory, and a run killed mid-test would
@@ -473,8 +481,7 @@ describe("QueueService keeps one row per file", () => {
   });
 
   it("puts a failed file back in the queue when it is queued again", () => {
-    // No mirror, so nothing drains and the rows can be inspected as queued.
-    const queue = createQueue({ mirrors: new MirrorService() });
+    const queue = createPausedQueue();
     const failed = store.add({ md5: MD5 });
     store.update(failed.id, { status: "failed" });
 
@@ -486,7 +493,7 @@ describe("QueueService keeps one row per file", () => {
   });
 
   it("does not queue a file twice while it is waiting", () => {
-    const queue = createQueue({ mirrors: new MirrorService() });
+    const queue = createPausedQueue();
     const first = queue.add({ md5: MD5 });
     const second = queue.add({ md5: MD5 });
     const byURL = queue.add({ source: "arxiv", url: "https://arxiv.example/1.pdf" });
@@ -498,7 +505,7 @@ describe("QueueService keeps one row per file", () => {
   });
 
   it("queues a downloaded file afresh, leaving the disk to say it is there", () => {
-    const queue = createQueue({ mirrors: new MirrorService() });
+    const queue = createPausedQueue();
     const downloaded = store.add({ md5: MD5 });
     store.update(downloaded.id, { status: "downloaded" });
 
@@ -581,7 +588,7 @@ describe("QueueService with an item queued by DOI alone", () => {
   });
 
   it("does not queue one DOI twice, whatever its case", () => {
-    const queue = createQueue({ mirrors: new MirrorService() });
+    const queue = createPausedQueue();
     const first = queue.add({ doi: DOI });
     const second = queue.add({ doi: DOI.toUpperCase() });
 
@@ -664,5 +671,87 @@ describe("QueueService with a direct URL", () => {
 
     expect(item.source).toBe("libgen");
     expect(item.url).toBe("");
+  });
+});
+
+describe("QueueService working on several items at once", () => {
+  it("runs up to its concurrency together, each row taken once", async () => {
+    // Every file request is held open until the test releases it, so the only
+    // way three can be in flight together is three workers.
+    const released: (() => void)[] = [];
+    const fileRequests: string[] = [];
+    mockFetch(async (input) => {
+      const url = input.toString();
+      if (url.includes("/ads.php")) {
+        const md5 = new URL(url).searchParams.get("md5");
+        return new Response(
+          `<table id="main"><tr><td>Book</td><td><a href="https://first.example/files/${md5}.epub">GET</a></td></tr></table>`
+        );
+      }
+
+      fileRequests.push(url);
+      await new Promise<void>((resolve) => released.push(resolve));
+      return fileResponse();
+    });
+
+    const md5s = [
+      MD5,
+      OTHER_MD5,
+      "0aed81639c2e9b609e83d67668bc2c60",
+      "0db34f4676a91eceb556659b778b3a2d",
+    ];
+    const queue = createQueue({ concurrency: 3 });
+    const idle = waitForIdle(queue);
+    const items = md5s.map((md5) => queue.add({ md5 }));
+
+    const deadline = Date.now() + 5000;
+    while (fileRequests.length < 3 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    // Three at once, and the fourth still waiting for a free worker.
+    expect(fileRequests).toHaveLength(3);
+    expect(new Set(fileRequests).size).toBe(3);
+    expect(store.get(items[3].id)?.status).toBe("queued");
+
+    // Let everything through, including the fourth once a worker frees up.
+    const releaseAll = setInterval(() => {
+      for (const release of released.splice(0)) {
+        release();
+      }
+    }, 5);
+    await idle;
+    clearInterval(releaseAll);
+
+    expect(items.map((item) => store.get(item.id)?.status)).toEqual([
+      "downloaded",
+      "downloaded",
+      "downloaded",
+      "downloaded",
+    ]);
+    expect(fileRequests).toHaveLength(4);
+  });
+
+  it("still fetches what carries its own URL while no mirror is reachable", async () => {
+    mockFetch(async () => fileResponse());
+
+    const queue = createQueue({ mirrors: new MirrorService(), concurrency: 2 });
+    const idle = waitForIdle(queue);
+    const needsMirror = queue.add({ md5: MD5, title: "Waiting for the tunnel" });
+    const direct = queue.add({ source: "arxiv", url: "https://arxiv.example/1.pdf" });
+    await idle;
+
+    expect(store.get(needsMirror.id)?.status).toBe("queued");
+    expect(store.get(direct.id)?.status).toBe("downloaded");
+  });
+
+  it("never hands one row to two workers", () => {
+    const first = store.add({ md5: MD5 });
+    const second = store.add({ md5: OTHER_MD5 });
+
+    expect(store.claimNext()?.id).toBe(first.id);
+    expect(store.claimNext()?.id).toBe(second.id);
+    expect(store.claimNext()).toBeUndefined();
+    expect(store.get(first.id)?.status).toBe("resolving");
   });
 });
