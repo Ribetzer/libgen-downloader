@@ -108,13 +108,21 @@ const searchByLookup = async (
   const result = await runQueryLookup(parsedQuery, {
     candidates: context.candidates,
     onMirrorUnreachable: context.onMirrorUnreachable,
+    proxy: context.proxy,
   });
+
+  // Nothing answered is not the same as LibGen not having it: said as "no
+  // items", a refused lane read as "not on LibGen", and with every other
+  // source answering too, a paper could be failed as held nowhere.
+  if (result.status === "unreachable") {
+    return { status: "error", message: "LibGen could not be reached" };
+  }
 
   if (result.status !== "found") {
     return { status: "ok", items: [] };
   }
 
-  const fileDetails = await lookupFileDetails(result.candidate, result.records);
+  const fileDetails = await lookupFileDetails(result.candidate, result.records, context.proxy);
   const entries = buildEntriesFromEditions(result.records, fileDetails, result.candidate.adapter);
 
   return { status: "ok", items: toResults(entries) };

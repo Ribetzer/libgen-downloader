@@ -8,3 +8,9 @@ import { resetLibgenFilePacing } from "../../src/api/data/libgen-file-pacing";
 beforeEach(() => {
   resetLibgenFilePacing(0);
 });
+
+// Wiley's TDM pacing is module-level too, and 10s apart.
+beforeEach(async () => {
+  const { resetWileyPacing } = await import("../../src/api/sources/wiley-tdm");
+  resetWileyPacing();
+});

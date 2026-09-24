@@ -177,3 +177,10 @@ export const LIBGEN_BUSY_COOLDOWN_MS = 60_000;
 // straight away cannot outlast an outage measured in hours, so the waits
 // lengthen; once they are used up the item fails as it always did.
 export const DEFER_SCHEDULE_MS = [30 * 60_000, 2 * 3_600_000, 6 * 3_600_000, 12 * 3_600_000];
+
+// Wiley's text-and-data-mining API, for the open-access Wiley PDFs its website
+// keeps behind Cloudflare's check. Its terms allow 60 requests per 10 minutes,
+// so requests are spaced 10 minutes / 60 apart - a check and a download per
+// article means one article every 20 seconds at most.
+export const WILEY_TDM_URL = "https://api.wiley.com/onlinelibrary/tdm/v1/articles/";
+export const WILEY_TDM_MIN_INTERVAL_MS = 10_000;

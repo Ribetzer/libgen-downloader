@@ -3,11 +3,12 @@ import { buildFastDownloadURL, fetchAnnasDownloadURL } from "../src/api/sources/
 import { normalizeTitle, resetArxivPacing } from "../src/api/sources/arxiv";
 import {
   halDocumentURL,
+  isWiley,
   openAccessSource,
   orderLocations,
   readCitationPDF,
 } from "../src/api/sources/open-access";
-import type { SourceOutcome, SourceResult } from "../src/api/sources";
+import { downloadRequestInit, type SourceOutcome, type SourceResult } from "../src/api/sources";
 import { getRequestURL, mockFetch } from "./support/fetch-mock";
 
 const DOI = "10.1111/cgf.14752";
@@ -248,5 +249,60 @@ describe("fetchAnnasDownloadURL", () => {
       status: "error",
       exhausted: false,
     });
+  });
+});
+
+describe("Wiley's TDM API", () => {
+  afterEach(() => {
+    delete process.env.WILEY_TDM_TOKEN;
+  });
+
+  it("fetches a Wiley open-access PDF through the TDM API, token and all", async () => {
+    process.env.WILEY_TDM_TOKEN = "token-123";
+    const utilities = await import("../src/utilities");
+    mock.module("../src/utilities", () => ({ ...utilities, delay: async () => {} }));
+    const tokens: string[] = [];
+    mockFetch(async (input, init) => {
+      const url = getRequestURL(input);
+      if (url.startsWith("https://api.unpaywall.org/")) {
+        return Response.json({
+          title: "A Wiley paper",
+          publisher: "Wiley",
+          oa_locations: [
+            {
+              host_type: "publisher",
+              url_for_pdf: "https://onlinelibrary.wiley.com/doi/pdfdirect/x",
+            },
+          ],
+        });
+      }
+      if (url.startsWith("https://api.wiley.com/")) {
+        tokens.push(new Headers(init?.headers).get("wiley-tdm-client-token") ?? "");
+        return pdfResponse();
+      }
+      return cloudflareCheck();
+    });
+
+    const outcome = await openAccessSource.search({ kind: "doi", doi: "10.1111/cgf.14728" }, 1, {
+      candidates: [],
+    });
+
+    expect(itemsOf(outcome)[0]).toMatchObject({
+      source: "openaccess",
+      downloadURL: "https://api.wiley.com/onlinelibrary/tdm/v1/articles/10.1111%2Fcgf.14728",
+    });
+    expect(tokens).toEqual(["token-123"]);
+    // …and the download itself carries the token too.
+    expect(
+      downloadRequestInit("https://api.wiley.com/onlinelibrary/tdm/v1/articles/10.1111%2Fcgf.14728")
+    ).toEqual({ headers: { "Wiley-TDM-Client-Token": "token-123" } });
+  });
+
+  it("is not asked without a token, or about a paper Wiley does not publish", () => {
+    expect(downloadRequestInit("https://api.wiley.com/onlinelibrary/tdm/v1/articles/x")).toEqual(
+      {}
+    );
+    expect(isWiley({ publisher: "Eurographics", oa_locations: [] })).toBe(false);
+    expect(isWiley({ publisher: "Wiley", oa_locations: [] })).toBe(true);
   });
 });

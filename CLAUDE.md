@@ -253,6 +253,20 @@ connection.
   served the PDF to that, but a bot check to a browser disguise sent from a
   VPN lane. Wiley's open-access PDFs sit behind Cloudflare's check, so those
   rows get browser links instead: publisher page, Sci-Hub, Anna's Archive.
+- **Wiley's TDM API** (`src/api/sources/wiley-tdm.ts`) serves the Wiley
+  open-access PDFs that its website puts behind Cloudflare. Open access tries
+  it after the repository copies and before arXiv, only for papers Wiley
+  publishes, and only with `WILEY_TDM_TOKEN` set in `.env`. The token goes
+  in a header on every request, including the download
+  (`downloadRequestInit`, whose headers `transferFile` now merges rather than
+  replaces). Requests are spaced 10 s apart, as Wiley's terms allow 60 per 10
+  minutes.
+- **The queue's DOI lookups go out on the worker's lane**, for LibGen's JSON
+  too (`LookupArguments.proxy`). Before this they all queued at
+  `paceLibgenPage`'s 3 s spacing on the main connection, and an interactive
+  search waited behind them. A lookup where no mirror answered is now an error
+  ("LibGen could not be reached"), not "no items". Otherwise a refused lane
+  read as "not on LibGen", and could end as "no file on any source".
 - **Anna's Archive member API as a fallback for LibGen files.**
   `/dyn/api/fast_download.json?md5&key` answers scripts with JSON (its pages
   are behind DDoS-Guard). When `downloadByMD5` fails and `ANNAS_ARCHIVE_KEY`

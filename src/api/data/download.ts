@@ -473,7 +473,11 @@ const transferFile = async ({
       // (no resume) when this was written and 206 (resume) by September 2026;
       // the request costs one header either way.
       const resumeFromBytes = await partFileSize(partPath);
-      const headers: Record<string, string> = { ...extraHeaders };
+      // A host's own headers (Wiley's TDM token) first, then the caller's.
+      const headers: Record<string, string> = {
+        ...(requestInit?.headers as Record<string, string> | undefined),
+        ...extraHeaders,
+      };
       if (resumeFromBytes > 0) {
         headers.Range = `bytes=${resumeFromBytes}-`;
       }

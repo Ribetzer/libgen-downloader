@@ -1,4 +1,5 @@
 import { findArxivByTitle } from "./arxiv";
+import { wileyServesPDF, wileyTDMEnabled, wileyTDMURL } from "./wiley-tdm";
 import type { Source, SourceResult } from "./index";
 
 /**
@@ -38,8 +39,16 @@ interface UnpaywallRecord {
   year?: number | null;
   z_authors?: { given?: string; family?: string }[] | null;
   journal_name?: string | null;
+  publisher?: string | null;
   oa_locations?: UnpaywallLocation[] | null;
 }
+
+/** Whether Wiley publishes it, so its TDM API may serve the PDF. */
+export const isWiley = (record: UnpaywallRecord): boolean =>
+  /wiley/i.test(record.publisher || "") ||
+  (record.oa_locations || []).some((location) =>
+    /wiley\.com/i.test(`${location.url || ""} ${location.url_for_pdf || ""}`)
+  );
 
 /** Repository copies first: publishers are where the bot checks are. */
 export const orderLocations = (locations: UnpaywallLocation[]): UnpaywallLocation[] => [
@@ -198,6 +207,13 @@ export const openAccessSource: Source = {
       if (pdf) {
         return { status: "ok", items: [toResult(doi, record, pdf, "openaccess")] };
       }
+    }
+
+    // Wiley's own copy, through the route Wiley offers scripts - its website
+    // answers them with Cloudflare's check. Only with a token, and only for
+    // a paper Wiley publishes.
+    if (wileyTDMEnabled() && isWiley(record) && (await wileyServesPDF(doi))) {
+      return { status: "ok", items: [toResult(doi, record, wileyTDMURL(doi), "openaccess")] };
     }
 
     // No copy that answers with a PDF: a preprint under the same title.

@@ -288,3 +288,53 @@ describe("Sci-Hub on a lane", () => {
     resetScihubPacing();
   });
 });
+
+const fixture = (name: string) =>
+  fs.readFileSync(path.join(import.meta.dir, "fixtures", name), "utf8");
+
+describe("LibGen DOI lookups on a lane", () => {
+  const candidate = {
+    mirror: { src: "https://first.example/", type: "libgen-plus" as const },
+    adapter: new LibgenPlusAdapter("https://first.example/"),
+  };
+
+  it("asks LibGen through the lane's proxy", async () => {
+    const { libgenSource } = await import("../src/api/sources/libgen");
+    const proxies: string[] = [];
+    mockFetch(async (input, init) => {
+      proxies.push((init as { proxy?: string } | undefined)?.proxy ?? "");
+      const url = getRequestURL(input);
+      if (url.includes("object=f")) {
+        return new Response(fixture("file-details.json"));
+      }
+      return new Response(fixture("edition-by-doi.json"));
+    });
+
+    const outcome = await libgenSource.search(
+      { kind: "doi", doi: "10.1080/2165347X.2013.870057" },
+      1,
+      {
+        candidates: [candidate],
+        proxy: "http://172.30.0.11:8888",
+      }
+    );
+
+    expect(outcome.status).toBe("ok");
+    expect(proxies.length).toBeGreaterThan(0);
+    expect(proxies.every((proxy) => proxy === "http://172.30.0.11:8888")).toBe(true);
+  });
+
+  it("says LibGen could not be reached rather than that it has nothing", async () => {
+    const { libgenSource } = await import("../src/api/sources/libgen");
+    mockFetch(
+      async () => new Response("<h1>503. Service Temporarily Unavailable</h1>", { status: 503 })
+    );
+
+    const outcome = await libgenSource.search({ kind: "doi", doi: "10.1111/cgf.1" }, 1, {
+      candidates: [candidate],
+      proxy: "http://172.30.0.13:8888",
+    });
+
+    expect(outcome).toEqual({ status: "error", message: "LibGen could not be reached" });
+  });
+});

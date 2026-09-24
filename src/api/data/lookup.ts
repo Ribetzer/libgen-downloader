@@ -20,6 +20,11 @@ export type LookupResult =
 
 interface LookupArguments {
   candidates: MirrorCandidate[];
+  /**
+   * Another VPN connection's proxy, so a queue's lookups spread across the
+   * lanes instead of all waiting their turn on the main connection.
+   */
+  proxy?: string;
   onMirrorTry?: (mirrorSource: string) => void;
   onMirrorUnreachable?: (mirrorSource: string) => void;
 }
@@ -30,11 +35,17 @@ interface LookupArguments {
  * resolver: a miss on one mirror is not the end of the story.
  */
 const lookupAcrossMirrors = async (
-  { candidates, onMirrorTry, onMirrorUnreachable }: LookupArguments,
+  { candidates, onMirrorTry, onMirrorUnreachable: reportUnreachable, proxy }: LookupArguments,
   load: (candidate: MirrorCandidate) => Promise<EditionRecord[]>
 ): Promise<LookupResult> => {
   const checkedMirrors: string[] = [];
   let reachedAnyMirror = false;
+  // Failing through a proxy may be the proxy's fault; marking the mirror
+  // unreachable would take it away from every lane. Only direct requests say.
+  let onMirrorUnreachable = reportUnreachable;
+  if (proxy) {
+    onMirrorUnreachable = undefined;
+  }
 
   for (const candidate of candidates) {
     const mirrorSource = candidate.mirror.src;
@@ -76,7 +87,8 @@ const lookupAcrossMirrors = async (
  */
 export const lookupFileDetails = async (
   candidate: MirrorCandidate,
-  records: EditionRecord[]
+  records: EditionRecord[],
+  proxy?: string
 ): Promise<Map<string, FileDetails>> => {
   const fileIds = getEditionFileIds(records);
   if (fileIds.length === 0) {
@@ -84,7 +96,7 @@ export const lookupFileDetails = async (
   }
 
   const payload = await attempt(
-    () => getJSON(candidate.adapter.getFilesByIdsURL(fileIds)),
+    () => getJSON(candidate.adapter.getFilesByIdsURL(fileIds), { proxy }),
     undefined,
     undefined,
     undefined,
@@ -99,7 +111,9 @@ export const lookupEditionByDOI = async (
   lookupArguments: LookupArguments
 ): Promise<LookupResult> => {
   return lookupAcrossMirrors(lookupArguments, async (candidate) => {
-    const payload = await getJSON(candidate.adapter.getEditionByDOIURL(doi));
+    const payload = await getJSON(candidate.adapter.getEditionByDOIURL(doi), {
+      proxy: lookupArguments.proxy,
+    });
     return parseEditionsJSON(payload);
   });
 };

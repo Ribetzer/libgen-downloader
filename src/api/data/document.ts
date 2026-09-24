@@ -32,10 +32,10 @@ const requestHeaders = (url: string): Record<string, string> => {
   return headers;
 };
 
-export async function getJSON(url: string): Promise<unknown> {
+export async function getJSON(url: string, options: { proxy?: string } = {}): Promise<unknown> {
   try {
-    await paceLibgenPage();
-    const response = await fetch(url, { headers: requestHeaders(url) });
+    await paceLibgenPage(options.proxy);
+    const response = await fetch(url, { headers: requestHeaders(url), proxy: options.proxy });
 
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);

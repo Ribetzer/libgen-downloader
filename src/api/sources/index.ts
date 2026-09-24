@@ -3,6 +3,7 @@ import type { ParsedQuery } from "../data/query";
 import type { MirrorCandidate } from "../data/resolve";
 import type { Entry } from "../models/entry";
 import { isSciHubPageHost, sciHubHostNeedsPin, scihubRequestInit } from "./scihub";
+import { wileyRequestInit } from "./wiley-tdm";
 
 /**
  * A library that can be searched, as distinct from a *mirror* of one.
@@ -93,6 +94,12 @@ export const downloadRequestInit = (downloadURL: string): RequestInit => {
   // certificate; with an ordinary one, the pin is what breaks the download.
   if (isSciHubPageHost(downloadURL) && sciHubHostNeedsPin(new URL(downloadURL).hostname)) {
     return scihubRequestInit();
+  }
+
+  // Wiley's TDM API wants its token on every request, the download included.
+  const wiley = wileyRequestInit(downloadURL);
+  if (wiley) {
+    return wiley;
   }
 
   return {};
