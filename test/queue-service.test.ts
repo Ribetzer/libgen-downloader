@@ -11,6 +11,7 @@ import { mockFetch } from "./support/fetch-mock";
 import { stubPartFileRename } from "./support/fs-mock";
 
 const MD5 = "b7abef3d085a1007a137a247dcff8dcb";
+const OTHER_MD5 = "108804c7a0e8c28c31071f2c34269570";
 const OUTPUT_DIRECTORY = path.join(os.tmpdir(), "libgen-downloader-queue-test");
 const MARKER = ".libgen-volume";
 
@@ -137,18 +138,60 @@ describe("ItemStore", () => {
     expect(store.cancel(running.id)).toBe(false);
   });
 
-  it("drops a dismissed failure out of the retry set", () => {
-    // Retrying every failure is wrong when they are not equivalent: the same
-    // file queued twice leaves two rows, and a third may already have been
-    // fetched by hand. Dismissing takes one out without claiming it succeeded.
+  it("removes a dismissed failure from the history entirely", () => {
+    // Marking it cancelled instead kept it in the history and, by touching
+    // updated_at, moved it to the top - above whatever fetched the paper since.
     const abandoned = store.add({ md5: MD5, title: "Not worth retrying" });
-    const wanted = store.add({ md5: "108804c7a0e8c28c31071f2c34269570", title: "Still wanted" });
+    const wanted = store.add({ md5: OTHER_MD5, title: "Still wanted" });
     store.update(abandoned.id, { status: "failed" });
     store.update(wanted.id, { status: "failed" });
 
     expect(store.dismiss(abandoned.id)).toBe(true);
+    expect(store.get(abandoned.id)).toBeUndefined();
     expect(store.listFailed().map((item) => item.id)).toEqual([wanted.id]);
-    expect(store.get(abandoned.id)?.status).toBe("cancelled");
+    expect(store.listHistory(10).map((item) => item.id)).toEqual([wanted.id]);
+  });
+
+  it("requeues a failure as the same row, with its outcome cleared", () => {
+    const item = store.add({ md5: MD5, title: "Try again" });
+    store.update(item.id, { status: "failed", error: "HTTP 500", progress: 20, total: 40 });
+
+    expect(store.requeue(item.id)).toBe(true);
+    expect(store.get(item.id)).toMatchObject({ status: "queued", error: "", progress: 0 });
+    expect(store.listActive().map((active) => active.id)).toEqual([item.id]);
+    expect(store.listHistory(10)).toHaveLength(0);
+  });
+
+  it("will not requeue something that downloaded", () => {
+    const item = store.add({ md5: MD5 });
+    store.update(item.id, { status: "downloaded" });
+
+    expect(store.requeue(item.id)).toBe(false);
+    expect(store.get(item.id)?.status).toBe("downloaded");
+  });
+
+  it("clears failures superseded by a download or by a later failure", () => {
+    const failedFirst = store.add({ md5: MD5 });
+    const cancelled = store.add({ md5: MD5 });
+    const fetched = store.add({ md5: MD5 });
+    store.update(failedFirst.id, { status: "failed" });
+    store.update(cancelled.id, { status: "cancelled" });
+    store.update(fetched.id, { status: "downloaded" });
+
+    const repeats = [1, 2, 3].map(() => store.add({ md5: OTHER_MD5 }));
+    for (const repeat of repeats) {
+      store.update(repeat.id, { status: "failed" });
+    }
+
+    const lone = store.add({ source: "scihub", url: "https://sci-hub.example/paper.pdf" });
+    store.update(lone.id, { status: "failed" });
+
+    expect(store.collapseSuperseded()).toBe(4);
+    expect(store.listHistory(10).map((item) => item.id)).toEqual(
+      expect.arrayContaining([fetched.id, repeats[2].id, lone.id])
+    );
+    expect(store.listHistory(10)).toHaveLength(3);
+    expect(store.collapseSuperseded()).toBe(0);
   });
 
   it("will not dismiss anything that has not failed", () => {
@@ -231,7 +274,7 @@ describe("QueueService", () => {
     const queue = createQueue({ mirrors });
     const statuses: string[] = [];
     queue.subscribe((event) => {
-      if (event.type !== "queue-idle") {
+      if (event.type === "item-added" || event.type === "item-updated") {
         statuses.push(event.item.status);
       }
     });
@@ -403,6 +446,147 @@ describe("QueueService", () => {
     await idle;
 
     expect(store.get(item.id)?.status).toBe("cancelled");
+  });
+});
+
+describe("QueueService keeps one row per file", () => {
+  it("retries a failure in place rather than adding a row", async () => {
+    mockFetch(async (input) => {
+      if (input.toString().includes("/ads.php")) {
+        return new Response(detailPage);
+      }
+
+      return fileResponse();
+    });
+
+    const failed = store.add({ md5: MD5, title: "A paper" });
+    store.update(failed.id, { status: "failed", error: "HTTP 500" });
+
+    const queue = createQueue();
+    const idle = waitForIdle(queue);
+    expect(queue.retry(failed.id)).toBe(true);
+    await idle;
+
+    const history = store.listHistory(10);
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({ id: failed.id, status: "downloaded", error: "" });
+  });
+
+  it("puts a failed file back in the queue when it is queued again", () => {
+    // No mirror, so nothing drains and the rows can be inspected as queued.
+    const queue = createQueue({ mirrors: new MirrorService() });
+    const failed = store.add({ md5: MD5 });
+    store.update(failed.id, { status: "failed" });
+
+    const requeued = queue.add({ md5: MD5, title: "Found by DOI", doi: "10.1145/1" });
+
+    expect(requeued).toMatchObject({ id: failed.id, status: "queued" });
+    expect(requeued).toMatchObject({ title: "Found by DOI", doi: "10.1145/1" });
+    expect(store.listHistory(10)).toHaveLength(0);
+  });
+
+  it("does not queue a file twice while it is waiting", () => {
+    const queue = createQueue({ mirrors: new MirrorService() });
+    const first = queue.add({ md5: MD5 });
+    const second = queue.add({ md5: MD5 });
+    const byURL = queue.add({ source: "arxiv", url: "https://arxiv.example/1.pdf" });
+    const byURLAgain = queue.add({ source: "arxiv", url: "https://arxiv.example/1.pdf" });
+
+    expect(second.id).toBe(first.id);
+    expect(byURLAgain.id).toBe(byURL.id);
+    expect(store.listActive()).toHaveLength(2);
+  });
+
+  it("queues a downloaded file afresh, leaving the disk to say it is there", () => {
+    const queue = createQueue({ mirrors: new MirrorService() });
+    const downloaded = store.add({ md5: MD5 });
+    store.update(downloaded.id, { status: "downloaded" });
+
+    const again = queue.add({ md5: MD5 });
+
+    expect(again.id).not.toBe(downloaded.id);
+    expect(store.get(downloaded.id)?.status).toBe("downloaded");
+  });
+});
+
+describe("QueueService with an item queued by DOI alone", () => {
+  const DOI = "10.1145/1073204.1073206";
+
+  it("looks the DOI up when its turn comes, then downloads what it found", async () => {
+    mockFetch(async (input) => {
+      if (input.toString().includes("/ads.php")) {
+        return new Response(detailPage);
+      }
+
+      return fileResponse();
+    });
+
+    const lookedUp: string[] = [];
+    const queue = createQueue({
+      resolveDOI: async (doi) => {
+        lookedUp.push(doi);
+        return { md5: MD5, source: "libgen", title: "Found by DOI" };
+      },
+    });
+    const idle = waitForIdle(queue);
+    const item = queue.add({ doi: DOI });
+    await idle;
+
+    expect(lookedUp).toEqual([DOI]);
+    expect(store.get(item.id)).toMatchObject({
+      status: "downloaded",
+      md5: MD5,
+      doi: DOI,
+      title: "Found by DOI",
+    });
+  });
+
+  it("fails the row with the lookup's reason when no source has it", async () => {
+    const queue = createQueue({
+      resolveDOI: async (doi) => ({ reason: `no file on any source for ${doi}` }),
+    });
+    const idle = waitForIdle(queue);
+    const item = queue.add({ doi: DOI });
+    await idle;
+
+    expect(store.get(item.id)).toMatchObject({
+      status: "failed",
+      error: `no file on any source for ${DOI}`,
+    });
+  });
+
+  it("names the file by the DOI's registered title once it has been looked up", async () => {
+    mockFetch(async (input) => {
+      if (input.toString().includes("/ads.php")) {
+        return new Response(detailPage);
+      }
+
+      return fileResponse();
+    });
+
+    const queue = createQueue({
+      resolveDOI: async () => ({ md5: MD5, source: "libgen", title: "CATALOGUE ENTRY" }),
+    });
+    const item = store.add({ doi: DOI, origin: "list" });
+    store.setMetadata(item.id, { status: "found", title: "Skinning mesh animations" });
+    const idle = waitForIdle(queue);
+    queue.start();
+    await idle;
+
+    expect(store.get(item.id)).toMatchObject({
+      status: "downloaded",
+      title: "Skinning mesh animations",
+      origin: "list",
+    });
+  });
+
+  it("does not queue one DOI twice, whatever its case", () => {
+    const queue = createQueue({ mirrors: new MirrorService() });
+    const first = queue.add({ doi: DOI });
+    const second = queue.add({ doi: DOI.toUpperCase() });
+
+    expect(second.id).toBe(first.id);
+    expect(store.listActive()).toHaveLength(1);
   });
 });
 

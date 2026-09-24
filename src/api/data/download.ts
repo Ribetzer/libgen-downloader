@@ -7,6 +7,7 @@ import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 import type { DownloadResult } from "../models/download-result";
 import { Mirror } from "./config";
 import { buildDownloadFileName, MAX_FILE_NAME_LENGTH, withCollisionSuffix } from "./filename";
+import { noteLibgenFileLimit, paceLibgenFile, readFileLimit } from "./libgen-file-pacing";
 import { MirrorCandidate, resolveDownloadURL, ResolveResult } from "./resolve";
 import {
   DOWNLOAD_ATTEMPT_COUNT,
@@ -323,6 +324,11 @@ interface TransferArguments {
   /** Extra request headers, for a source whose host wants one. */
   headers?: Record<string, string>;
   /**
+   * A LibGen file: spaced to stay under the CDN's per-IP file limit, and its
+   * "too many files" page treated as an instruction to wait, not a failure.
+   */
+  libgenFile?: boolean;
+  /**
    * Extra fetch options the host requires - Sci-Hub's certificate pin is the
    * only user. Spread under the headers, so `Range` is never displaced.
    */
@@ -404,6 +410,7 @@ const transferFile = async ({
   preferredDOI,
   headers: extraHeaders,
   requestInit,
+  libgenFile,
   throttleBackoffMs,
   backoffMs,
   deadline,
@@ -433,9 +440,29 @@ const transferFile = async ({
         headers.Range = `bytes=${resumeFromBytes}-`;
       }
 
+      if (libgenFile) {
+        await paceLibgenFile();
+      }
+
       const downloadStream = await fetch(downloadURL, { ...requestInit, headers });
 
       if (!downloadStream.ok) {
+        // LibGen's CDN reports its per-IP file limit as a plain HTTP 500 with
+        // an explanatory page, so the status alone reads as a broken server.
+        // Retrying that at the ordinary backoff only adds to the count.
+        if (libgenFile) {
+          const limit = readFileLimit(await downloadStream.text().catch(() => ""));
+          if (limit) {
+            noteLibgenFileLimit(limit.windowMs);
+            waitMs = limit.windowMs;
+            let quota = `${limit.windowMs / 1000}s`;
+            if (limit.files) {
+              quota = `${limit.files} files per ${quota}`;
+            }
+            throw new Error(`LibGen's download limit reached (${quota})`);
+          }
+        }
+
         if (THROTTLE_STATUS_CODES.has(downloadStream.status)) {
           const throttleWaitMs =
             readRetryAfterMs(downloadStream.headers.get("retry-after")) ??
@@ -672,6 +699,7 @@ export const downloadByMD5 = async ({
 
     const transferOutcome = await transferFile({
       downloadURL: resolveResult.downloadURL,
+      libgenFile: true,
       outputDirectory,
       preferredTitle,
       preferredDOI,

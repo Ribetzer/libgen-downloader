@@ -79,6 +79,18 @@ export const CORPUS_TIMEOUT_MS = 5000;
 
 export const SEARCH_PAGE_SIZE = 25;
 
+// LibGen's `ads.php` - the only page carrying the per-request `key` that
+// `get.php` needs - answers a bare request with 200 and a zero-byte body. It
+// wants a browser User-Agent *and* a Referer; either alone is refused. An empty
+// body parses into an empty document, so every mirror looked like it held no
+// record for the MD5, which is how a hotlink check reads as "not found
+// anywhere". Unlike ARXIV_USER_AGENT, which names this tool because arXiv's
+// terms ask callers to identify themselves, this one has to look like a
+// browser to be served at all.
+export const BROWSER_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
+  "Chrome/131.0.0.0 Safari/537.36";
+
 // arXiv, searched alongside LibGen rather than instead of it. Fewer rows than
 // LibGen returns on purpose: the two lists are concatenated, and a preprint
 // server should add to a catalogue search, not bury it.
@@ -98,7 +110,46 @@ export const ARXIV_USER_AGENT = "libgen-downloader (+https://github.com/obsfx/li
 // longer resolves on any resolver, which is why it is not in this list.
 export const SCIHUB_HOSTS = ["sci-hub.st", "sci-hub.ru"];
 
+// Sci-Hub's captcha is rate-triggered, so a batch of DOIs queued back to back
+// trips it and then reads back as "no file on any source" - the papers look
+// absent when they were never really asked for. Unlike arXiv's interval, which
+// is a published term of use, this one is inferred: it only has to be slow
+// enough that a queue drain does not look like a scrape.
+export const SCIHUB_MIN_INTERVAL_MS = 5000;
+
+// What the challenge page itself suggests ("try again in a minute"). Taking it
+// at its word beats guessing, and beats carrying on at the normal interval and
+// collecting a wall of false negatives.
+export const SCIHUB_CHALLENGE_COOLDOWN_MS = 60_000;
+
 // The editions tab honours `res` and `page`, so a periodical is collected a
 // page at a time with a cap that keeps a whole-journal query bounded.
 export const ISSUE_PAGE_SIZE = 100;
 export const MAX_ISSUE_PAGES = 20;
+
+// Title/author lookups for DOIs that arrive in an uploaded list. Crossref's
+// list endpoint takes many `doi:` filters at once, so a whole list is a few
+// dozen requests; 50 keeps the URL well inside what the API accepts.
+export const METADATA_BATCH_SIZE = 50;
+
+// doi.org answers the DOIs Crossref does not hold (DataCite: Zenodo,
+// Eurographics), one request each. Both are someone else's free service and
+// this is a background job, so it asks slowly rather than as fast as allowed.
+export const METADATA_REQUEST_INTERVAL_MS = 1000;
+
+// After a lookup that failed for network reasons rather than for a missing
+// record. The DOIs stay pending and are asked about again after this.
+export const METADATA_RETRY_MS = 60_000;
+
+// LibGen's file CDN (every mirror's get.php redirects to the same one) allows
+// 15 files per 300 seconds per IP, and says so in an HTTP 500 page: "You have
+// downloaded too much files (15) in the last 300 seconds, please wait". A
+// sequential queue of small papers finishes one every few seconds, so without
+// spacing it trips the limit within minutes - and every retry of a refused
+// request counts as another file, which kept the counter pinned and failed
+// every download. One request per 21s stays under 15 per 300s with a margin.
+export const LIBGEN_FILE_MIN_INTERVAL_MS = 21_000;
+
+// How long to stand back when the limit page does not say. It normally does,
+// and its own window is used instead.
+export const LIBGEN_FILE_LIMIT_WINDOW_MS = 300_000;

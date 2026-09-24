@@ -5,12 +5,19 @@ import {
   absolutePDFURL,
   getSciHubHosts,
   readSciHubPage,
+  resetScihubPacing,
   SCIHUB_CERTIFICATE_FINGERPRINT,
+  scihubCooldownUntil,
   scihubRequestInit,
   scihubSource,
+  scihubWaitMs,
 } from "../src/api/sources/scihub";
 import { downloadRequestInit } from "../src/api/sources";
-import { SCIHUB_HOSTS } from "../src/settings";
+import {
+  SCIHUB_CHALLENGE_COOLDOWN_MS,
+  SCIHUB_HOSTS,
+  SCIHUB_MIN_INTERVAL_MS,
+} from "../src/settings";
 import { mockFetch } from "./support/fetch-mock";
 
 // Captured from sci-hub.st, not written by hand: the three responses only
@@ -114,9 +121,57 @@ describe("getSciHubHosts", () => {
   });
 });
 
+describe("scihubWaitMs", () => {
+  it("spaces consecutive requests by the minimum interval", () => {
+    const now = 1_000_000;
+    // Nothing sent yet, so nothing to wait behind.
+    expect(scihubWaitMs(now, 0, 0)).toBe(0);
+    expect(scihubWaitMs(now, now, 0)).toBe(SCIHUB_MIN_INTERVAL_MS);
+    expect(scihubWaitMs(now + SCIHUB_MIN_INTERVAL_MS, now, 0)).toBe(0);
+  });
+
+  it("waits out a captcha cooldown even when the interval is already served", () => {
+    const now = 10_000;
+    // The interval alone would let this through; the cooldown is what holds it.
+    expect(scihubWaitMs(now, 0, now + 20_000)).toBe(20_000);
+  });
+
+  it("takes whichever of the two is longer, never their sum", () => {
+    const now = 10_000;
+    const wait = scihubWaitMs(now, now, now + 1000);
+    expect(wait).toBe(Math.max(SCIHUB_MIN_INTERVAL_MS, 1000));
+  });
+});
+
 describe("scihubSource", () => {
   afterEach(() => {
     delete process.env.LIBGEN_SCIHUB_HOSTS;
+    // Without this the next test sits out a real interval behind this one.
+    resetScihubPacing();
+  });
+
+  it("holds off after a captcha instead of asking straight back", async () => {
+    process.env.LIBGEN_SCIHUB_HOSTS = "sci-hub.example";
+    const { fetchMock } = mockFetch(async () => new Response(CHALLENGE, { status: 200 }));
+
+    const before = Date.now();
+    await scihubSource.search({ kind: "doi", doi: "10.1145/37402.37422" }, 1, { candidates: [] });
+    fetchMock.mockRestore();
+
+    // The cooldown is recorded, not slept through: the request that triggered
+    // it has already been answered, so it is the *next* caller that waits.
+    expect(scihubWaitMs(before, 0, scihubCooldownUntil())).toBeGreaterThan(0);
+    expect(scihubCooldownUntil()).toBeGreaterThanOrEqual(before + SCIHUB_CHALLENGE_COOLDOWN_MS);
+  });
+
+  it("records no cooldown when the answer was a plain no", async () => {
+    process.env.LIBGEN_SCIHUB_HOSTS = "sci-hub.example";
+    const { fetchMock } = mockFetch(async () => new Response(NOT_FOUND, { status: 404 }));
+
+    await scihubSource.search({ kind: "doi", doi: "10.9999/nope" }, 1, { candidates: [] });
+    fetchMock.mockRestore();
+
+    expect(scihubCooldownUntil()).toBe(0);
   });
 
   it("takes a DOI and nothing else", () => {

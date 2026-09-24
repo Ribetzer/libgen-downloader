@@ -170,12 +170,16 @@ export const getEditionFileIds = (records: EditionRecord[]): string[] => {
 };
 
 /**
- * `https://doi.org/10.1080/X`, `doi:10.1080/X` and a bare DOI all reduce to the
- * same thing. Lookups are case-insensitive on LibGen's side, so the case the
- * user typed is preserved.
+ * `https://doi.org/10.1080/X`, `doi.org/10.1080/X`, `doi:10.1080/X` and a bare
+ * DOI all reduce to the same thing. Lookups are case-insensitive on LibGen's
+ * side, so the case the user typed is preserved.
  */
 export const normalizeDOI = (value: string): string | undefined => {
-  const trimmed = value.trim().replace(/^doi:\s*/i, "");
+  let trimmed = value.trim().replace(/^doi:\s*/i, "");
+  // Copied out of an address bar without its scheme, which `URL` rejects.
+  if (/^(?:dx\.|www\.)?doi\.org\//i.test(trimmed)) {
+    trimmed = `https://${trimmed}`;
+  }
 
   let candidate = trimmed;
   try {

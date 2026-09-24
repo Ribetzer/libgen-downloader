@@ -1,9 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
-import { parseMD5List } from "../api/data/file";
+import { parseIdentifierList } from "../api/data/file";
 import { extractMD5 } from "../api/data/md5";
 import { CorpusService } from "./corpus-service";
 import { ItemStore, NewQueueItem, QueueItem } from "./database";
+import { MetadataService } from "./metadata-service";
 import { MirrorService } from "./mirror-service";
 import { QueueService } from "./queue-service";
 import { runSearch } from "./search-service";
@@ -25,6 +26,9 @@ const WEBHOOK_URL = process.env.LIBGEN_WEBHOOK_URL || "";
 // A library service that can say which results are already held. Unset simply
 // means the UI does not show that, rather than being an error.
 const CORPUS_URL = process.env.LIBGEN_CORPUS_URL || "";
+// Sent to Crossref as a contact in the User-Agent, which moves the title and
+// author lookups for listed DOIs into its faster "polite" pool. Optional.
+const CONTACT_EMAIL = process.env.LIBGEN_CONTACT_EMAIL || "";
 const MIRROR_REFRESH_MS = 60 * 60 * 1000;
 const MIRROR_RETRY_MS = 30 * 1000;
 const HISTORY_LIMIT = 500;
@@ -78,11 +82,25 @@ const queue = new QueueService({
   outputDirectory: OUTPUT_DIRECTORY,
   storage,
   onFinished: notifyFinished,
+  // The same lookup `POST /api/queue` does for a `{"doi": …}` body, run by the
+  // queue itself for a DOI that arrived in an uploaded list.
+  resolveDOI: (doi) => resolveRequestedItem({ doi }),
+});
+
+const metadata = new MetadataService({
+  store,
+  contact: CONTACT_EMAIL,
+  onUpdated: (items) => queue.refreshed(items),
 });
 
 const recovered = store.recoverInterrupted();
 if (recovered > 0) {
   console.log(`Requeued ${recovered} item(s) interrupted by a restart`);
+}
+
+const collapsed = store.collapseSuperseded();
+if (collapsed > 0) {
+  console.log(`Removed ${collapsed} failed item(s) superseded by a later download or attempt`);
 }
 
 /**
@@ -134,6 +152,8 @@ if (startedWithMirror && startedWithVolume.ready) {
 scheduleMirrorRefresh(firstDelayMs);
 
 queue.start();
+// Anything a previous run queued but never finished looking up.
+metadata.wake();
 
 /**
  * Every queue change is pushed to connected browsers, so progress reads live
@@ -213,9 +233,9 @@ interface QueueRequestItem {
  * held can still be fetched by DOI alone - which is the whole point of the
  * `{"doi": …}` body for the paired RAG corpus.
  */
-const resolveRequestedItem = async (
+async function resolveRequestedItem(
   item: QueueRequestItem
-): Promise<NewQueueItem | { reason: string }> => {
+): Promise<NewQueueItem | { reason: string }> {
   const requestedDOI = (item.doi || "").trim();
   const requestedURL = (item.url || "").trim();
 
@@ -261,7 +281,7 @@ const resolveRequestedItem = async (
     title: item.title || first.articleTitle || first.title || "",
     doi: requestedDOI || first.doi || "",
   };
-};
+}
 
 /**
  * Proxied rather than called from the browser so the page stays same-origin -
@@ -307,12 +327,21 @@ const handleQueuePost = async (request: Request): Promise<Response> => {
   return json({ added, rejected });
 };
 
-const handleMD5ListPost = async (request: Request): Promise<Response> => {
+/**
+ * An uploaded list of MD5s, DOIs, or both. A DOI is queued as it is and looked
+ * up when its turn comes rather than here, so a list of thousands answers at
+ * once instead of holding the request open for every lookup.
+ */
+const handleListPost = async (request: Request): Promise<Response> => {
   const contents = await request.text();
-  const { md5List, invalidLines } = parseMD5List(contents);
+  const { md5List, doiList, invalidLines } = parseIdentifierList(contents);
 
-  const added = queue.addMany(md5List.map((md5) => ({ md5, source: "libgen" })));
-  return json({ added, invalidLines });
+  const added = queue.addMany([
+    ...md5List.map((md5) => ({ md5, source: "libgen", origin: "list" })),
+    ...doiList.map((doi) => ({ doi, origin: "list" })),
+  ]);
+  metadata.wake();
+  return json({ added, md5Count: md5List.length, doiCount: doiList.length, invalidLines });
 };
 
 const buildFailureList = (): string => {
@@ -393,7 +422,7 @@ const handleRequest = async (request: Request): Promise<Response> => {
   }
 
   if (pathname === "/api/queue/md5-list" && request.method === "POST") {
-    return handleMD5ListPost(request);
+    return handleListPost(request);
   }
 
   if (pathname === "/api/corpus/owned" && request.method === "POST") {
@@ -429,31 +458,13 @@ const handleRequest = async (request: Request): Promise<Response> => {
         return json({ error: "No failed item with that id" }, 404);
       }
 
-      const added = queue.addMany([
-        {
-          md5: item.md5,
-          title: item.title,
-          doi: item.doi,
-          // Without these a retried arXiv or Sci-Hub row would come back as an
-          // MD5-less LibGen item and fail immediately.
-          source: item.source,
-          url: item.url,
-        },
-      ]);
-      return json({ added });
+      // The same row goes back in the queue, keeping its source and URL. A new
+      // row would leave this one behind, still failed and still retryable.
+      return json({ retried: queue.retry(item.id) });
     }
 
-    const failed = store.listFailed();
-    const added = queue.addMany(
-      failed.map((item) => ({
-        md5: item.md5,
-        title: item.title,
-        doi: item.doi,
-        source: item.source,
-        url: item.url,
-      }))
-    );
-    return json({ added });
+    const retried = store.listFailed().filter((item) => queue.retry(item.id));
+    return json({ retried: retried.length });
   }
 
   if (pathname === "/api/history/dismiss" && request.method === "POST") {

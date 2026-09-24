@@ -61,6 +61,8 @@ describe("normalizeDOI", () => {
     expect(normalizeDOI("doi:10.1080/2165347X.2013.870057")).toBe(expected);
     expect(normalizeDOI("https://doi.org/10.1080/2165347X.2013.870057")).toBe(expected);
     expect(normalizeDOI("https://dx.doi.org/10.1080%2F2165347X.2013.870057")).toBe(expected);
+    expect(normalizeDOI("doi.org/10.1080/2165347X.2013.870057")).toBe(expected);
+    expect(normalizeDOI("dx.doi.org/10.1080/2165347X.2013.870057")).toBe(expected);
   });
 
   it("rejects anything that is not a DOI", () => {
