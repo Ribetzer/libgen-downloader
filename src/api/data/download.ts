@@ -10,7 +10,9 @@ import { buildDownloadFileName, MAX_FILE_NAME_LENGTH, withCollisionSuffix } from
 import {
   DIRECT_LANE,
   noteLibgenFileLimit,
+  noteLibgenFileStarted,
   paceLibgenFile,
+  slowLibgenLane,
   readBusyPage,
   readFileLimit,
 } from "./libgen-file-pacing";
@@ -337,13 +339,8 @@ interface TransferArguments {
    * page treated as an instruction to wait, not a failure.
    */
   libgenLane?: string;
-  /** Attempts before giving up; DOWNLOAD_ATTEMPT_COUNT when not given. */
-  attemptCount?: number;
-  /**
-   * Give up at once when the server says it is busy or over its limit, rather
-   * than waiting it out - for a caller with somewhere better to go.
-   */
-  stopWhenLimited?: boolean;
+  /** See `QuickTry`. */
+  quickTry?: QuickTry;
   /**
    * Extra fetch options the host requires - Sci-Hub's certificate pin is the
    * only user. Spread under the headers, so `Range` is never displaced.
@@ -396,14 +393,42 @@ const describeProgress = (receivedBytes: number, total: number): string => {
   return `reached ${formatMegabytes(receivedBytes)}`;
 };
 
+/**
+ * A shorter try for a large file, when the caller has a second route to it
+ * (Anna's Archive): once the file is known to be at least `minBytes` -
+ * from an earlier attempt, or from the size this attempt's response
+ * announces - it gets `attempts` attempts instead of the full count, and a
+ * busy or limit answer ends the try instead of being waited out. A small
+ * file, or one of unknown size, gets the full patience: it usually finishes
+ * between drops, and the second route's allowance is better spent on the
+ * files that keep restarting from zero.
+ */
+export interface QuickTry {
+  minBytes: number;
+  /** What an earlier attempt learned of the file's size; 0 if nothing. */
+  knownBytes: number;
+  attempts: number;
+}
+
 type TransferOutcome =
   | { status: "downloaded"; result: DownloadResult }
   // `transient`: nothing said the file is gone - dropped connections, an
   // overloaded server - so trying again later may well succeed.
-  | { status: "failed"; reason: string; transient: boolean };
+  // `quick`: it ended on a quick try, so another mirror - the same CDN - is
+  // not worth trying before the second route.
+  | { status: "failed"; reason: string; transient: boolean; quick?: boolean };
 
 /** Answers that say the file is not there, as opposed to not right now. */
 const PERMANENT_STATUS_CODES = new Set([400, 401, 403, 404, 410]);
+
+/** "45s", or "4 min" once it is minutes. */
+const formatWait = (ms: number): string => {
+  if (ms < 90_000) {
+    return `${Math.round(ms / 1000)}s`;
+  }
+
+  return `${Math.round(ms / 60_000)} min`;
+};
 
 /** The page's own title, for saying what came back instead of a file. */
 const pageTitle = (html: string): string =>
@@ -441,8 +466,7 @@ const transferFile = async ({
   headers: extraHeaders,
   requestInit,
   libgenLane,
-  attemptCount = DOWNLOAD_ATTEMPT_COUNT,
-  stopWhenLimited = false,
+  quickTry,
   throttleBackoffMs,
   backoffMs,
   deadline,
@@ -464,7 +488,11 @@ const transferFile = async ({
   // Whether the last failure said the file itself is gone (a 404, say).
   let permanent = false;
 
-  for (let index = 0; index < attemptCount; index++) {
+  // The largest size the server has announced for this file so far.
+  let knownBytes = quickTry?.knownBytes ?? 0;
+  const onQuickTry = () => quickTry !== undefined && knownBytes >= quickTry.minBytes;
+
+  for (let index = 0; index < DOWNLOAD_ATTEMPT_COUNT; index++) {
     let limited = false;
     // Set once the server has answered: whether it honoured the Range and
     // resumed. Only a real resume makes a dropped attempt progress.
@@ -493,7 +521,21 @@ const transferFile = async ({
       }
 
       if (libgenLane) {
-        await paceLibgenFile(libgenLane);
+        await paceLibgenFile(libgenLane, (waitMs, cooling) => {
+          // A long wait is said, so the row reads as waiting rather than stuck
+          // in "resolving" - and which kind: the limit's cooldown, or only
+          // the lane's spacing between files.
+          if (waitMs < 15_000) {
+            return;
+          }
+          if (cooling) {
+            onRetry?.(
+              `waiting ${formatWait(waitMs)} for LibGen's download limit on ${libgenLane} to clear`
+            );
+            return;
+          }
+          onRetry?.(`waiting ${formatWait(waitMs)} for its turn on ${libgenLane}`);
+        });
       }
 
       const downloadStream = await fetch(downloadURL, { ...requestInit, headers });
@@ -512,6 +554,7 @@ const transferFile = async ({
         const limit = readFileLimit(body);
         if (limit) {
           noteLibgenFileLimit(limit.windowMs, libgenLane);
+          slowLibgenLane(libgenLane);
           waitMs = limit.windowMs;
           limited = true;
           let quota = `${limit.windowMs / 1000}s`;
@@ -567,6 +610,10 @@ const transferFile = async ({
         throw new Error(`HTTP ${downloadStream.status}`);
       }
 
+      if (libgenLane) {
+        noteLibgenFileStarted(libgenLane);
+      }
+
       resumed = downloadStream.status === 206 && resumeFromBytes > 0;
       restartedFromZero = downloadStream.status !== 206 && resumeFromBytes > 0;
 
@@ -596,7 +643,8 @@ const transferFile = async ({
       // waits the window out rather than failing for being in a busy queue.
       // The wait itself is `paceLibgenFile`'s, at the top of the next pass -
       // the cooldown is shared, and sleeping here as well would wait twice.
-      if (limited && stopWhenLimited) {
+      knownBytes = Math.max(knownBytes, attemptTotal);
+      if (limited && onQuickTry()) {
         break;
       }
 
@@ -634,7 +682,11 @@ const transferFile = async ({
         continue;
       }
 
-      if (index + 1 === attemptCount) {
+      if (index + 1 === DOWNLOAD_ATTEMPT_COUNT) {
+        break;
+      }
+
+      if (onQuickTry() && quickTry && index + 1 >= quickTry.attempts) {
         break;
       }
 
@@ -656,7 +708,7 @@ const transferFile = async ({
         }
         onRetry(
           `${lastError} - ${describeProgress(attemptBytes, attemptTotal)}${restartNote}, ` +
-            `retrying in ${waitSeconds}s (${index + 2}/${attemptCount})`
+            `retrying in ${waitSeconds}s (${index + 2}/${DOWNLOAD_ATTEMPT_COUNT})`
         );
       }
 
@@ -669,7 +721,7 @@ const transferFile = async ({
   // half-files that nothing will ever finish.
   await removePartialFile(partPath);
 
-  return { status: "failed", reason: lastError, transient: !permanent };
+  return { status: "failed", reason: lastError, transient: !permanent, quick: onQuickTry() };
 };
 
 const getMirrorLabel = (mirrorSource: string): string => {
@@ -796,10 +848,11 @@ interface DownloadByMD5Arguments {
   /** Which lane to use; the process's own connection when not given. */
   lane?: DownloadLane;
   /**
-   * A shorter try, for a caller with a second route to the same file (Anna's
-   * Archive): fewer attempts, one mirror, and no waiting out a busy server.
+   * For a caller with a second route to the same file (Anna's Archive): a
+   * large file gets a short try and one mirror; see `QuickTry`. Without it,
+   * every file gets the full patience.
    */
-  quickTry?: boolean;
+  quickTry?: Omit<QuickTry, "attempts">;
   candidates: MirrorCandidate[];
   outputDirectory: string;
   preferredTitle?: string;
@@ -831,7 +884,7 @@ export type DownloadByMD5Outcome =
 export const downloadByMD5 = async ({
   md5,
   lane,
-  quickTry = false,
+  quickTry,
   candidates,
   outputDirectory,
   preferredTitle,
@@ -853,16 +906,12 @@ export const downloadByMD5 = async ({
   let lastTransferTransient = true;
   const deadline = Date.now() + totalBudgetMs;
 
-  // Every mirror's file comes from the same CDN, so on a quick try a second
-  // mirror is just a second go at the same overloaded server.
-  let maxMirrors = MAX_DOWNLOAD_MIRRORS;
-  let attemptCount = DOWNLOAD_ATTEMPT_COUNT;
+  let transferQuickTry: QuickTry | undefined;
   if (quickTry) {
-    maxMirrors = 1;
-    attemptCount = QUICK_TRY_ATTEMPTS;
+    transferQuickTry = { ...quickTry, attempts: QUICK_TRY_ATTEMPTS };
   }
 
-  for (let mirrorIndex = 0; mirrorIndex < maxMirrors; mirrorIndex++) {
+  for (let mirrorIndex = 0; mirrorIndex < MAX_DOWNLOAD_MIRRORS; mirrorIndex++) {
     // Checked before resolving as well as before transferring: walking a dead
     // mirror's detail pages is not free either.
     if (mirrorIndex > 0 && Date.now() >= deadline) {
@@ -895,8 +944,7 @@ export const downloadByMD5 = async ({
     const transferOutcome = await transferFile({
       downloadURL: resolveResult.downloadURL,
       libgenLane: lane?.key ?? DIRECT_LANE,
-      attemptCount,
-      stopWhenLimited: quickTry,
+      quickTry: transferQuickTry,
       requestInit: { proxy: lane?.proxy },
       outputDirectory,
       preferredTitle,
@@ -920,6 +968,13 @@ export const downloadByMD5 = async ({
     const failedMirrorSource = resolveResult.candidate.mirror.src;
     lastTransferError = transferOutcome.reason;
     lastTransferTransient = transferOutcome.transient;
+    // Every mirror's file comes from the same CDN: after a quick try on a
+    // large file, a second mirror is a second go at the same overloaded
+    // server, and the second route is waiting.
+    if (transferOutcome.quick) {
+      failedMirrorLabels.push(getMirrorLabel(resolveResult.candidate.mirror.src));
+      break;
+    }
     failedMirrorLabels.push(getMirrorLabel(failedMirrorSource));
     remainingCandidates = remainingCandidates.filter(
       (candidate) => candidate.mirror.src !== failedMirrorSource

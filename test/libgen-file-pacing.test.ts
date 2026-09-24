@@ -8,10 +8,14 @@ import { downloadByMD5, downloadFromURL } from "../src/api/data/download";
 import {
   libgenFileCooldownUntil,
   libgenFileWaitMs,
+  libgenLaneIntervalMs,
+  noteLibgenFileLimit,
+  noteLibgenFileStarted,
   paceLibgenFile,
   readBusyPage,
   readFileLimit,
   resetLibgenFilePacing,
+  slowLibgenLane,
 } from "../src/api/data/libgen-file-pacing";
 import { LIBGEN_FILE_MIN_INTERVAL_MS } from "../src/settings";
 import { mockFetch } from "./support/fetch-mock";
@@ -329,5 +333,39 @@ describe("downloadByMD5 against an overloaded LibGen", () => {
     expect(outcome.status === "failed" && outcome.reason).toContain(
       "LibGen sent a page instead of the file: Temporarily unavailable"
     );
+  });
+});
+
+describe("adaptive spacing per lane", () => {
+  it("backs a lane off after a limit refusal, capped, and eases back on clean starts", () => {
+    resetLibgenFilePacing(21_000);
+
+    slowLibgenLane("FI-13");
+    expect(libgenLaneIntervalMs("FI-13")).toBe(31_500);
+    for (let refusal = 0; refusal < 10; refusal++) {
+      slowLibgenLane("FI-13");
+    }
+    expect(libgenLaneIntervalMs("FI-13")).toBe(60_000);
+    // Another lane is untouched: its exit IP has its own allowance.
+    expect(libgenLaneIntervalMs("DE-6")).toBe(21_000);
+
+    noteLibgenFileStarted("FI-13");
+    expect(libgenLaneIntervalMs("FI-13")).toBe(59_000);
+    for (let start = 0; start < 100; start++) {
+      noteLibgenFileStarted("FI-13");
+    }
+    expect(libgenLaneIntervalMs("FI-13")).toBe(21_000);
+  });
+
+  it("says how long a lane cooling down will make the request wait", async () => {
+    const waits = await recordWaits();
+    resetLibgenFilePacing(21_000);
+    noteLibgenFileLimit(300_000, "FI-37");
+    const heard: number[] = [];
+
+    await paceLibgenFile("FI-37", (ms) => heard.push(ms));
+
+    expect(heard[0]).toBeGreaterThan(290_000);
+    expect(waits[0]).toBe(heard[0]);
   });
 });

@@ -1,9 +1,9 @@
 import { downloadByMD5, DownloadLane, downloadFromURL } from "../api/data/download";
 import { DEFAULT_ANNAS_DOMAIN, fetchAnnasDownloadURL } from "../api/sources/annas-archive";
-import { DIRECT_LANE } from "../api/data/libgen-file-pacing";
+import { DIRECT_LANE, libgenFileCooldownUntil } from "../api/data/libgen-file-pacing";
 import type { DownloadResult } from "../api/models/download-result";
 import { downloadRequestInit } from "../api/sources";
-import { DEFER_SCHEDULE_MS, QUEUE_RETRY_MS } from "../settings";
+import { ANNAS_MIN_BYTES, DEFER_SCHEDULE_MS, QUEUE_RETRY_MS } from "../settings";
 import { ItemStore, NewQueueItem, QueueItem, TERMINAL_STATUSES } from "./database";
 import { MirrorService } from "./mirror-service";
 import { StorageService } from "./storage-service";
@@ -304,11 +304,21 @@ export class QueueService {
    * more work would not change - no disk, or nothing it can fetch without a
    * mirror - in which case the retry timer brings it back.
    */
-  /** The usable lane with the fewest workers, so the load spreads evenly. */
+  /**
+   * Whether a lane can take new work: up, and not sitting out LibGen's file
+   * limit. A lane cooling down used to keep both its workers waiting for the
+   * full five minutes while other lanes had nothing to spare; now it takes no
+   * new item and its slots go to lanes that are open.
+   */
+  private laneOpen(lane: DownloadLane): boolean {
+    return this.isLaneReady(lane) && libgenFileCooldownUntil(lane.key) <= Date.now() + 30_000;
+  }
+
+  /** The open lane with the fewest workers, so the load spreads evenly. */
   private quietestLane(): DownloadLane | undefined {
     let quietest: DownloadLane | undefined;
     for (const lane of this.lanes) {
-      if (!this.isLaneReady(lane)) {
+      if (!this.laneOpen(lane)) {
         continue;
       }
 
@@ -325,7 +335,7 @@ export class QueueService {
     for (;;) {
       // A lane whose VPN connection has dropped hands its worker back, and
       // start() gives the slot to a lane that is up.
-      if (!this.isLaneReady(lane)) {
+      if (!this.laneOpen(lane)) {
         this.scheduleRetry();
         return undefined;
       }
@@ -439,7 +449,9 @@ export class QueueService {
       // most for Sci-Hub, where the DOI is how the file was found at all.
       preferredDOI: item.doi,
       onStart: (filename: string, total: number) => {
-        this.change(item.id, { status: "downloading", filename, total, progress: 0 });
+        // Bytes are arriving: whatever the last retry or wait said is over, and
+        // left in place it read as a download stuck on a limit it had passed.
+        this.change(item.id, { status: "downloading", filename, total, progress: 0, error: "" });
       },
       onProgress: (filename: string, receivedBytes: number, total: number) => {
         this.change(item.id, { filename, progress: receivedBytes, total });
@@ -482,15 +494,22 @@ export class QueueService {
     if (this.lanes.length > 1) {
       laneNote = `[${lane.key}] `;
     }
+    // With Anna's Archive to fall back on, a large file gets a short try on
+    // LibGen: its download server drops transfers and restarts them from
+    // zero, and the full patience spent most of an hour failing before the
+    // file was fetched from Anna's in a minute. A small paper gets the full
+    // patience - it usually finishes between drops, and the allowance is
+    // better spent on the files that do not. `item.total` is what an earlier
+    // attempt learned of the size.
+    let quickTry: { minBytes: number; knownBytes: number } | undefined;
+    if (this.annasAvailable()) {
+      quickTry = { minBytes: ANNAS_MIN_BYTES, knownBytes: item.total };
+    }
+
     const outcome = await downloadByMD5({
       md5: item.md5,
       lane,
-      // With Anna's Archive to fall back on, LibGen gets a short try: its
-      // download server drops transfers and restarts them from zero, and the
-      // full patience spent most of an hour failing before the file was
-      // fetched from Anna's in a minute. Full patience again once the day's
-      // allowance is gone.
-      quickTry: this.annasAvailable(),
+      quickTry,
       candidates: this.mirrors.getCandidates(),
       onMirrorUnreachable: (mirrorSource) => {
         this.mirrors.markUnreachable(mirrorSource);

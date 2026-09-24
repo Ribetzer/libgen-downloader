@@ -190,3 +190,15 @@ export const WILEY_TDM_MIN_INTERVAL_MS = 10_000;
 // drops transfers and restarts them from zero, so the full six attempts across
 // four mirrors mostly spent the better part of an hour failing first.
 export const QUICK_TRY_ATTEMPTS = 2;
+
+// A file this size or larger gets the quick LibGen try while Anna's Archive
+// has allowance left. Smaller papers usually finish on LibGen between its
+// dropped connections; the large ones restart from zero on every drop, and
+// they are what the allowance is worth spending on.
+export const ANNAS_MIN_BYTES = 15 * 1024 * 1024;
+
+// The most a lane's file spacing grows to after it keeps hitting LibGen's
+// limit. A Proton exit is shared with strangers downloading from LibGen too,
+// so the spacing that stays under 15 per 300s differs by lane and by hour;
+// each lane backs off on a refusal and eases back on a clean start.
+export const LIBGEN_FILE_MAX_INTERVAL_MS = 60_000;

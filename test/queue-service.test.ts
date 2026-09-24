@@ -894,7 +894,7 @@ describe("Anna's Archive as a second way to a LibGen file", () => {
     expect(apiCalls).toBe(1);
   });
 
-  it("goes straight to Anna's when LibGen says it is busy, rather than waiting", async () => {
+  it("goes straight to Anna's when LibGen says it is busy about a large file", async () => {
     let libgenFileRequests = 0;
     mockFetch(async (input) => {
       const url = input.toString();
@@ -908,12 +908,15 @@ describe("Anna's Archive as a second way to a LibGen file", () => {
         return fileResponse();
       }
       libgenFileRequests += 1;
-      return new Response("busy", { status: 503 });
+      return new Response("unavailable", { status: 503 });
     });
 
+    // An earlier attempt learned it is a 40 MB file.
+    const item = store.add({ md5: MD5 });
+    store.update(item.id, { total: 40 * 1024 * 1024 });
     const queue = createQueue({ annasKey: "secret", annasDomain: "annas.example" });
     const idle = waitForIdle(queue);
-    const item = queue.add({ md5: MD5 });
+    queue.start();
     await idle;
 
     expect(store.get(item.id)).toMatchObject({
@@ -924,7 +927,7 @@ describe("Anna's Archive as a second way to a LibGen file", () => {
     expect(libgenFileRequests).toBe(1);
   });
 
-  it("gives LibGen only a short try while Anna's is there to fall back on", async () => {
+  it("gives LibGen only a short try on a large file while Anna's is there", async () => {
     let libgenFileRequests = 0;
     mockFetch(async (input) => {
       const url = input.toString();
@@ -938,8 +941,40 @@ describe("Anna's Archive as a second way to a LibGen file", () => {
         return fileResponse();
       }
       libgenFileRequests += 1;
-      return new Response("gateway", { status: 502 });
+      return new Response("unavailable", { status: 502 });
     });
+
+    const utilities = await import("../src/utilities");
+    mock.module("../src/utilities", () => ({ ...utilities, delay: async () => {} }));
+
+    const item = store.add({ md5: MD5 });
+    store.update(item.id, { total: 40 * 1024 * 1024 });
+    const queue = createQueue({ annasKey: "secret", annasDomain: "annas.example" });
+    const idle = waitForIdle(queue);
+    queue.start();
+    await idle;
+
+    expect(store.get(item.id)?.status).toBe("downloaded");
+    expect(libgenFileRequests).toBe(2);
+  });
+
+  it("gives a small paper LibGen's full patience before spending the allowance", async () => {
+    let libgenFileRequests = 0;
+    mockFetch(async (input) => {
+      const url = input.toString();
+      if (url.includes("/ads.php")) {
+        return new Response(detailPage);
+      }
+      if (url.includes("/dyn/api/fast_download.json")) {
+        return Response.json({ download_url: "https://fast.example/file.epub" });
+      }
+      if (url === "https://fast.example/file.epub") {
+        return fileResponse();
+      }
+      libgenFileRequests += 1;
+      return new Response("unavailable", { status: 502 });
+    });
+
     const utilities = await import("../src/utilities");
     mock.module("../src/utilities", () => ({ ...utilities, delay: async () => {} }));
 
@@ -948,8 +983,13 @@ describe("Anna's Archive as a second way to a LibGen file", () => {
     const item = queue.add({ md5: MD5 });
     await idle;
 
-    expect(store.get(item.id)?.status).toBe("downloaded");
-    expect(libgenFileRequests).toBe(2);
+    // All six attempts before Anna's is asked - and it still rescues the file
+    // rather than leaving it to wait hours for another go.
+    expect(libgenFileRequests).toBeGreaterThanOrEqual(6);
+    expect(store.get(item.id)).toMatchObject({
+      status: "downloaded",
+      mirror: "https://annas.example/",
+    });
   });
 
   it("is off without a key", async () => {

@@ -1,5 +1,6 @@
 import {
   LIBGEN_FILE_LIMIT_WINDOW_MS,
+  LIBGEN_FILE_MAX_INTERVAL_MS,
   LIBGEN_FILE_MIN_INTERVAL_MS,
   LIBGEN_PAGE_MIN_INTERVAL_MS,
 } from "../../settings";
@@ -25,6 +26,14 @@ export const DIRECT_LANE = "direct";
 interface LaneState {
   lastRequestAt: number;
   cooldownUntil: number;
+  /**
+   * This lane's spacing between file requests. It starts at the minimum,
+   * grows by half each time the lane is refused under the limit, and eases
+   * back a second per clean start: the same spacing that suits one exit IP
+   * keeps another - busier with strangers - over the limit, and every
+   * refusal costs the lane a five-minute blackout.
+   */
+  intervalMs: number;
 }
 
 const lanes = new Map<string, LaneState>();
@@ -53,7 +62,7 @@ export const paceLibgenPage = async (key = DIRECT_LANE): Promise<void> => {
 const laneState = (lane: string): LaneState => {
   let state = lanes.get(lane);
   if (!state) {
-    state = { lastRequestAt: 0, cooldownUntil: 0 };
+    state = { lastRequestAt: 0, cooldownUntil: 0, intervalMs: minIntervalMs };
     lanes.set(lane, state);
   }
 
@@ -105,19 +114,45 @@ export const libgenFileWaitMs = (
   intervalMs = minIntervalMs
 ): number => Math.max(0, previousRequestAt + intervalMs - now, limitedUntil - now);
 
-/** Wait for this request's turn on its lane. */
-export const paceLibgenFile = async (lane = DIRECT_LANE): Promise<void> => {
+/**
+ * Wait for this request's turn on its lane. `onWait` hears how long, before
+ * the wait starts, so a long one can be shown rather than looking stuck.
+ */
+export const paceLibgenFile = async (
+  lane = DIRECT_LANE,
+  onWait?: (waitMs: number, cooling: boolean) => void
+): Promise<void> => {
   const state = laneState(lane);
   const now = Date.now();
-  const waitMs = libgenFileWaitMs(now, state.lastRequestAt, state.cooldownUntil);
+  const waitMs = libgenFileWaitMs(now, state.lastRequestAt, state.cooldownUntil, state.intervalMs);
   // Claim the slot before waiting, so callers arriving together space out
   // instead of all reading the same stale timestamp and going out at once.
-  state.lastRequestAt = Math.max(now, state.lastRequestAt + minIntervalMs, state.cooldownUntil);
+  state.lastRequestAt = Math.max(now, state.lastRequestAt + state.intervalMs, state.cooldownUntil);
 
   if (waitMs > 0) {
+    // Whether it is the limit's cooldown or only the lane's spacing.
+    onWait?.(waitMs, state.cooldownUntil > now);
     await delay(waitMs);
   }
 };
+
+/** Refused under the file limit: this lane asks less often from now on. */
+export const slowLibgenLane = (lane = DIRECT_LANE): void => {
+  const state = laneState(lane);
+  state.intervalMs = Math.min(
+    Math.max(state.intervalMs, minIntervalMs) * 1.5,
+    Math.max(LIBGEN_FILE_MAX_INTERVAL_MS, minIntervalMs)
+  );
+};
+
+/** A file request went through: ease this lane's spacing back a little. */
+export const noteLibgenFileStarted = (lane = DIRECT_LANE): void => {
+  const state = laneState(lane);
+  state.intervalMs = Math.max(minIntervalMs, state.intervalMs - 1000);
+};
+
+/** This lane's current spacing between file requests. */
+export const libgenLaneIntervalMs = (lane = DIRECT_LANE): number => laneState(lane).intervalMs;
 
 /** The CDN refused: hold every file request on this lane until its window has passed. */
 export const noteLibgenFileLimit = (windowMs: number, lane = DIRECT_LANE): void => {

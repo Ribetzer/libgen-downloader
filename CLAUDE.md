@@ -287,6 +287,19 @@ connection.
   Let's Encrypt, and the pin (the self-signed certificate as the only trust
   anchor) then rejected everything. `fetchSciHub` verifies normally first
   and pins only a host that fails on its certificate.
+- **Adaptive spacing per lane.** A Proton exit is shared, so 21 s (14 files
+  per 5 min) kept several lanes blacked out for 5 minutes at a time, and
+  throughput fell to about 2 downloads a minute. A limit refusal now grows that
+  lane's spacing by half (`slowLibgenLane`, capped at
+  `LIBGEN_FILE_MAX_INTERVAL_MS`), and each clean start eases it back a second
+  (`noteLibgenFileStarted`). A lane that is cooling down takes no new item
+  (`QueueService.laneOpen`), so its worker slots go to open lanes. A wait of
+  15 s or more is shown on the row instead of a bare "resolving".
+- **Large files only for Anna's quick try.** The quick try and the
+  busy-means-hand-over rule apply once the file is known to be at least
+  `ANNAS_MIN_BYTES` (15 MB), from an earlier attempt (`item.total`) or this
+  response's announced size. Small papers get full patience; Anna's is still
+  asked if LibGen gives up on one entirely.
 - **Concurrency:** defaults to two workers per lane.
 
 Transfers get their own, larger budget: `DOWNLOAD_ATTEMPT_COUNT` (6) per mirror across `MAX_DOWNLOAD_MIRRORS` (4), spaced by `DOWNLOAD_BACKOFF_MS` and clamped in wall-clock terms by `DOWNLOAD_TOTAL_BUDGET_MS` (45 min). **An attempt count is not a time limit** — 24 tries at a few minutes each is hours with the sequential queue blocked behind one file, which is what the budget exists to bound. `THROTTLE_BACKOFF_MS` is separate and much longer: a mirror answering 429/503 is asking for a slower pace, not reporting a dropped connection.

@@ -338,3 +338,26 @@ describe("LibGen DOI lookups on a lane", () => {
     expect(outcome).toEqual({ status: "error", message: "LibGen could not be reached" });
   });
 });
+
+describe("a lane sitting out LibGen's limit", () => {
+  it("takes no new work, leaving it to lanes that are open", async () => {
+    const requests = mockLibgen();
+    noteLibgenFileLimit(300_000, "DE-6");
+    const queue = new QueueService({
+      store,
+      mirrors: createMirrorService(),
+      outputDirectory: path.join(os.tmpdir(), "libgen-downloader-lanes-test"),
+      concurrency: 2,
+      lanes: LANES,
+    });
+    queues.push(queue);
+    const idle = drain(queue);
+    for (const md5 of MD5S.slice(0, 2)) {
+      queue.add({ md5 });
+    }
+    await idle;
+
+    // Both went out on the main lane; DE-6's proxy was never used.
+    expect(requests.every((request) => request.proxy === "")).toBe(true);
+  });
+});
