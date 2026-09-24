@@ -145,6 +145,26 @@ services:
       lanes:
         ipv4_address: 172.30.0.14
 
+  gluetun-dk-93:
+    <<: *lane
+    container_name: libgen-gluetun-dk-93
+    environment: *lane-environment
+    volumes:
+      - ./docker-data/gluetun-dk-93:/gluetun
+    networks:
+      lanes:
+        ipv4_address: 172.30.0.15
+
+  gluetun-dk-97:
+    <<: *lane
+    container_name: libgen-gluetun-dk-97
+    environment: *lane-environment
+    volumes:
+      - ./docker-data/gluetun-dk-97:/gluetun
+    networks:
+      lanes:
+        ipv4_address: 172.30.0.16
+
   libgen-downloader:
     build: .
     container_name: libgen-downloader
@@ -179,7 +199,7 @@ services:
       # lane too, named here. Downloads run two per lane unless
       # LIBGEN_CONCURRENCY says otherwise.
       - LIBGEN_LANE_NAME=FI-13
-      - LIBGEN_PROXIES=DE-6=http://172.30.0.11:8888,FI-37=http://172.30.0.12:8888,CH-278=http://172.30.0.13:8888,FI-33=http://172.30.0.14:8888
+      - LIBGEN_PROXIES=DE-6=http://172.30.0.11:8888,FI-37=http://172.30.0.12:8888,CH-278=http://172.30.0.13:8888,FI-33=http://172.30.0.14:8888,DK-93=http://172.30.0.15:8888,DK-97=http://172.30.0.16:8888
     volumes:
       - ./docker-data/config:/config
       - D:/Papers/inbox:/downloads
