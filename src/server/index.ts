@@ -446,6 +446,11 @@ const handleRequest = async (request: Request): Promise<Response> => {
       // say which extra routes are switched on. Never the key itself.
       annasDomain: ANNAS_DOMAIN,
       annasEnabled: Boolean(ANNAS_KEY),
+      // A library's EZproxy prefix, for a link a person clicks - never used
+      // to fetch anything automatically: licences forbid systematic
+      // downloading through a library proxy, and publishers answer it by
+      // blocking the whole institution.
+      libraryProxy: process.env.LIBGEN_LIBRARY_PROXY || "",
       openAccessEnabled: Boolean(process.env.LIBGEN_OPEN_ACCESS_EMAIL),
       error: state.lastError || "",
     });

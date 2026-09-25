@@ -210,6 +210,7 @@ services:
       - ANNAS_ARCHIVE_KEY=${ANNAS_ARCHIVE_KEY:-}
       - LIBGEN_ANNAS_DOMAIN=${LIBGEN_ANNAS_DOMAIN:-annas-archive.gl}
       - WILEY_TDM_TOKEN=${WILEY_TDM_TOKEN:-}
+      - LIBGEN_LIBRARY_PROXY=${LIBGEN_LIBRARY_PROXY:-}
       # The lanes above, by name and proxy address. The main connection is a
       # lane too, named here. Downloads run two per lane unless
       # LIBGEN_CONCURRENCY says otherwise.

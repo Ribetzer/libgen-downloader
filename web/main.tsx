@@ -16,6 +16,7 @@ interface ServerConfig {
   lanes?: { key: string; proxied: boolean; ready: boolean; ip: string }[];
   concurrency?: number;
   annasDomain?: string;
+  libraryProxy?: string;
   annasEnabled?: boolean;
   openAccessEnabled?: boolean;
 }
@@ -190,12 +191,14 @@ const ItemRows = ({
   onRetry,
   onDismiss,
   annasDomain,
+  libraryProxy,
 }: {
   items: QueueItem[];
   onCancel?: (id: number) => void;
   onRetry?: (id: number) => void;
   onDismiss?: (id: number) => void;
   annasDomain: string;
+  libraryProxy: string;
 }) => (
   <>
     {items.map((item) => {
@@ -254,6 +257,15 @@ const ItemRows = ({
                   <a href={`https://doi.org/${item.doi}`} target="_blank" rel="noreferrer">
                     Publisher page
                   </a>
+                  {libraryProxy && (
+                    <a
+                      href={`${libraryProxy}https://doi.org/${item.doi}`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Via library
+                    </a>
+                  )}
                   <a href={`https://sci-hub.st/${item.doi}`} target="_blank" rel="noreferrer">
                     Sci-Hub
                   </a>
@@ -737,6 +749,7 @@ const App = () => {
                   items={queueItems}
                   onCancel={(id) => void cancel(id)}
                   annasDomain={config?.annasDomain || "annas-archive.gl"}
+                  libraryProxy={config?.libraryProxy || ""}
                 />
               </tbody>
             </table>
@@ -800,6 +813,7 @@ const App = () => {
                   onRetry={(id) => void retryOne(id)}
                   onDismiss={(id) => void dismissOne(id)}
                   annasDomain={config?.annasDomain || "annas-archive.gl"}
+                  libraryProxy={config?.libraryProxy || ""}
                 />
               </tbody>
             </table>
