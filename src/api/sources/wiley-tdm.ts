@@ -14,6 +14,15 @@ const WILEY_HOST = "api.wiley.com";
 
 const token = (): string => process.env.WILEY_TDM_TOKEN || "";
 
+/**
+ * A proxy that is not behind the VPN, for these requests only. Cloudflare in
+ * front of api.wiley.com answers VPN exit IPs with "Attention Required!",
+ * token or no token - measured on every lane - while the same request from an
+ * ordinary connection gets the PDF. So Wiley, and nothing else, goes out that
+ * way; it is the publisher's own API, called with the account's own token.
+ */
+const directProxy = (): string | undefined => process.env.LIBGEN_WILEY_PROXY || undefined;
+
 export const wileyTDMEnabled = (): boolean => Boolean(token());
 
 export const wileyTDMURL = (doi: string): string => `${WILEY_TDM_URL}${encodeURIComponent(doi)}`;
@@ -28,7 +37,10 @@ export const wileyRequestInit = (url: string): RequestInit | undefined => {
     return undefined;
   }
 
-  return { headers: { "Wiley-TDM-Client-Token": token() } };
+  return {
+    headers: { "Wiley-TDM-Client-Token": token() },
+    proxy: directProxy(),
+  } as RequestInit;
 };
 
 /**

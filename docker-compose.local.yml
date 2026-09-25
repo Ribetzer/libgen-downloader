@@ -180,6 +180,19 @@ services:
       lanes:
         ipv4_address: 172.30.0.18
 
+  # Outside the VPN, for api.wiley.com only: Cloudflare in front of Wiley's
+  # TDM API refuses VPN exit IPs. See docker/wiley-proxy/squid.conf, which
+  # refuses every other destination.
+  wiley-proxy:
+    image: ubuntu/squid:latest
+    container_name: libgen-wiley-proxy
+    volumes:
+      - ./docker/wiley-proxy/squid.conf:/etc/squid/squid.conf:ro
+    networks:
+      lanes:
+        ipv4_address: 172.30.0.30
+    restart: unless-stopped
+
   libgen-downloader:
     build: .
     container_name: libgen-downloader
@@ -210,6 +223,8 @@ services:
       - ANNAS_ARCHIVE_KEY=${ANNAS_ARCHIVE_KEY:-}
       - LIBGEN_ANNAS_DOMAIN=${LIBGEN_ANNAS_DOMAIN:-annas-archive.gl}
       - WILEY_TDM_TOKEN=${WILEY_TDM_TOKEN:-}
+      # Wiley's API goes out off the VPN, through the proxy above.
+      - LIBGEN_WILEY_PROXY=http://172.30.0.30:3128
       - LIBGEN_LIBRARY_PROXY=${LIBGEN_LIBRARY_PROXY:-}
       # The lanes above, by name and proxy address. The main connection is a
       # lane too, named here. Downloads run two per lane unless

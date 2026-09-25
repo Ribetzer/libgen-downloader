@@ -261,6 +261,16 @@ connection.
   (`downloadRequestInit`, whose headers `transferFile` now merges rather than
   replaces). Requests are spaced 10 s apart, as Wiley's terms allow 60 per 10
   minutes.
+- **Wiley goes out off the VPN.** Cloudflare in front of `api.wiley.com`
+  answers every VPN exit with "Attention Required!", token or not; the same
+  request from the home connection gets the PDF. So `LIBGEN_WILEY_PROXY`
+  points at `wiley-proxy`, a squid on the `lanes` network (172.30.0.30)
+  that is not behind gluetun and allows only `.wiley.com`. The API
+  redirects the download to `alm.wiley.com`, so allowing `api.wiley.com`
+  alone gets squid's own "Access Denied". `wileyRequestInit` carries the
+  proxy, and `withLaneProxy` lets it win over the worker's lane. The token
+  serves open-access articles only: a paywalled one answers 403 with an
+  empty body.
 - **The queue's DOI lookups go out on the worker's lane**, for LibGen's JSON
   too (`LookupArguments.proxy`). Before this they all queued at
   `paceLibgenPage`'s 3 s spacing on the main connection, and an interactive

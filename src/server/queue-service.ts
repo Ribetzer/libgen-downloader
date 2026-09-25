@@ -54,6 +54,15 @@ interface QueueServiceArguments {
 }
 
 /**
+ * A host's own fetch options, going out on the lane unless the host names a
+ * proxy of its own - Wiley's API goes out off the VPN, whichever lane asked.
+ */
+const withLaneProxy = (hostInit: RequestInit, lane: DownloadLane): RequestInit => {
+  const own = (hostInit as { proxy?: string }).proxy;
+  return { ...hostInit, proxy: own ?? lane.proxy } as RequestInit;
+};
+
+/**
  * Drains the queue through `downloadByMD5`, which owns resolve, retry, mirror
  * fall-through and cleanup. This layer only decides what to work on next,
  * records the outcome, and tells listeners about it.
@@ -470,7 +479,7 @@ export class QueueService {
         // a PDF served from the page host rather than the storage one.
         // The lane's proxy as well: a PDF on a Sci-Hub page host is behind the
         // same per-IP captcha as the lookup that found it.
-        requestInit: { ...downloadRequestInit(item.url), proxy: lane.proxy },
+        requestInit: withLaneProxy(downloadRequestInit(item.url), lane),
         ...shared,
       });
 
