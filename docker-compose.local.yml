@@ -2,10 +2,11 @@
 # gluetun, so the app's traffic leaves via ProtonVPN exactly as it would on the
 # NAS. Nothing here is Synology specific.
 #
-# Before the first run, put your WireGuard config in place:
-#   docker-data/gluetun/wireguard/wg0.conf
-# Gluetun insists on that filename, so a config downloaded as
-# libgen-FI-13.conf has to be copied there under the name wg0.conf.
+# Before the first run, put each tunnel's ProtonVPN WireGuard private key in
+# .env (LIBGEN_WG_KEY_*): the PrivateKey line of a config downloaded from
+# account.protonvpn.com. Gluetun connects with it to a server of its own
+# choosing in the lane's SERVER_COUNTRIES, so no per-server config file is
+# kept - and a lane can be moved to another server by reconnecting it.
 #
 #   docker compose -f docker-compose.local.yml up -d --build
 #   http://localhost:8095
@@ -42,15 +43,18 @@
 # them (LIBGEN_PROXIES) and paces each separately; a lane whose tunnel is down
 # is simply left out until it answers again.
 #
-# Each needs its own WireGuard config at docker-data/gluetun-<name>/wireguard/
-# wg0.conf, and each is one of the account's simultaneous connections. To add
-# a lane: copy a block, give it the next address, and append it to
-# LIBGEN_PROXIES.
+# Each lane names a country, not a server: gluetun's ProtonVPN provider picks a
+# server there at random each time it connects. Countries with strong privacy
+# law. The app moves a lane to another server through gluetun's control server
+# (port 8000, LIBGEN_GLUETUN_API_KEY) when LibGen keeps refusing its IP, when it
+# shares an IP with another lane, or when it stops answering - see
+# LaneService.rotateWhereNeeded. The key is also in each lane's
+# docker-data/gluetun-<name>/auth/config.toml, which gluetun reads.
 #
-# This stack runs with IPv6 off, and gluetun refuses a config that gives the
-# interface an IPv6 address ("interface address is IPv6 but IPv6 is not
-# supported"). A config downloaded with IPv6 on carries one on its Address and
-# DNS lines - drop the IPv6 entries there, keeping the 10.2.0.x ones.
+# Each tunnel is one of the account's simultaneous connections, with its own
+# private key (one key per tunnel, so Proton does not see them as a single
+# device). To add a lane: copy a block, give it the next address and a key of
+# its own, and append it to LIBGEN_PROXIES.
 x-lane: &lane
   image: qmcgaw/gluetun:latest
   cap_add:
@@ -79,8 +83,10 @@ services:
     devices:
       - /dev/net/tun:/dev/net/tun
     environment:
-      - VPN_SERVICE_PROVIDER=custom
+      - VPN_SERVICE_PROVIDER=protonvpn
       - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=${LIBGEN_WG_KEY_FI_1}
+      - SERVER_COUNTRIES=Finland
       - TZ=Europe/London
       # Subnets reachable WITHOUT going through the tunnel. Needed to reach
       # anything on the LAN - the research corpus for LIBGEN_CORPUS_URL, a NAS
@@ -105,77 +111,121 @@ services:
         ipv4_address: 172.30.0.2
     restart: unless-stopped
 
-  gluetun-de-6:
+  gluetun-fi-2:
     <<: *lane
-    container_name: libgen-gluetun-de-6
-    environment: &lane-environment
-      - VPN_SERVICE_PROVIDER=custom
+    container_name: libgen-gluetun-fi-2
+    environment:
+      - VPN_SERVICE_PROVIDER=protonvpn
       - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=${LIBGEN_WG_KEY_FI_2}
+      - SERVER_COUNTRIES=Finland
       - TZ=Europe/London
       - HTTPPROXY=on
       - HTTPPROXY_LISTENING_ADDRESS=:8888
     volumes:
-      - ./docker-data/gluetun-de-6:/gluetun
+      - ./docker-data/gluetun-fi-2:/gluetun
     networks:
       lanes:
         ipv4_address: 172.30.0.11
 
-  gluetun-fi-37:
+  gluetun-dk-1:
     <<: *lane
-    container_name: libgen-gluetun-fi-37
-    environment: *lane-environment
+    container_name: libgen-gluetun-dk-1
+    environment:
+      - VPN_SERVICE_PROVIDER=protonvpn
+      - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=${LIBGEN_WG_KEY_DK_1}
+      - SERVER_COUNTRIES=Denmark
+      - TZ=Europe/London
+      - HTTPPROXY=on
+      - HTTPPROXY_LISTENING_ADDRESS=:8888
     volumes:
-      - ./docker-data/gluetun-fi-37:/gluetun
+      - ./docker-data/gluetun-dk-1:/gluetun
     networks:
       lanes:
         ipv4_address: 172.30.0.12
 
-  gluetun-fi-33:
+  gluetun-dk-2:
     <<: *lane
-    container_name: libgen-gluetun-fi-33
-    environment: *lane-environment
+    container_name: libgen-gluetun-dk-2
+    environment:
+      - VPN_SERVICE_PROVIDER=protonvpn
+      - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=${LIBGEN_WG_KEY_DK_2}
+      - SERVER_COUNTRIES=Denmark
+      - TZ=Europe/London
+      - HTTPPROXY=on
+      - HTTPPROXY_LISTENING_ADDRESS=:8888
     volumes:
-      - ./docker-data/gluetun-fi-33:/gluetun
+      - ./docker-data/gluetun-dk-2:/gluetun
     networks:
       lanes:
         ipv4_address: 172.30.0.14
 
-  gluetun-dk-93:
+  gluetun-nl-1:
     <<: *lane
-    container_name: libgen-gluetun-dk-93
-    environment: *lane-environment
+    container_name: libgen-gluetun-nl-1
+    environment:
+      - VPN_SERVICE_PROVIDER=protonvpn
+      - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=${LIBGEN_WG_KEY_NL_1}
+      - SERVER_COUNTRIES=Netherlands
+      - TZ=Europe/London
+      - HTTPPROXY=on
+      - HTTPPROXY_LISTENING_ADDRESS=:8888
     volumes:
-      - ./docker-data/gluetun-dk-93:/gluetun
+      - ./docker-data/gluetun-nl-1:/gluetun
     networks:
       lanes:
         ipv4_address: 172.30.0.15
 
-  gluetun-dk-97:
+  gluetun-nl-2:
     <<: *lane
-    container_name: libgen-gluetun-dk-97
-    environment: *lane-environment
+    container_name: libgen-gluetun-nl-2
+    environment:
+      - VPN_SERVICE_PROVIDER=protonvpn
+      - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=${LIBGEN_WG_KEY_NL_2}
+      - SERVER_COUNTRIES=Netherlands
+      - TZ=Europe/London
+      - HTTPPROXY=on
+      - HTTPPROXY_LISTENING_ADDRESS=:8888
     volumes:
-      - ./docker-data/gluetun-dk-97:/gluetun
+      - ./docker-data/gluetun-nl-2:/gluetun
     networks:
       lanes:
         ipv4_address: 172.30.0.16
 
-  gluetun-dk-141:
+  gluetun-ch-1:
     <<: *lane
-    container_name: libgen-gluetun-dk-141
-    environment: *lane-environment
+    container_name: libgen-gluetun-ch-1
+    environment:
+      - VPN_SERVICE_PROVIDER=protonvpn
+      - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=${LIBGEN_WG_KEY_CH_1}
+      - SERVER_COUNTRIES=Switzerland
+      - TZ=Europe/London
+      - HTTPPROXY=on
+      - HTTPPROXY_LISTENING_ADDRESS=:8888
     volumes:
-      - ./docker-data/gluetun-dk-141:/gluetun
+      - ./docker-data/gluetun-ch-1:/gluetun
     networks:
       lanes:
         ipv4_address: 172.30.0.17
 
-  gluetun-dk-145:
+  gluetun-is-1:
     <<: *lane
-    container_name: libgen-gluetun-dk-145
-    environment: *lane-environment
+    container_name: libgen-gluetun-is-1
+    environment:
+      - VPN_SERVICE_PROVIDER=protonvpn
+      - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=${LIBGEN_WG_KEY_IS_1}
+      - SERVER_COUNTRIES=Iceland
+      - TZ=Europe/London
+      - HTTPPROXY=on
+      - HTTPPROXY_LISTENING_ADDRESS=:8888
     volumes:
-      - ./docker-data/gluetun-dk-145:/gluetun
+      - ./docker-data/gluetun-is-1:/gluetun
     networks:
       lanes:
         ipv4_address: 172.30.0.18
@@ -229,8 +279,10 @@ services:
       # The lanes above, by name and proxy address. The main connection is a
       # lane too, named here. Downloads run two per lane unless
       # LIBGEN_CONCURRENCY says otherwise.
-      - LIBGEN_LANE_NAME=FI-13
-      - LIBGEN_PROXIES=DE-6=http://172.30.0.11:8888,FI-37=http://172.30.0.12:8888,FI-33=http://172.30.0.14:8888,DK-93=http://172.30.0.15:8888,DK-97=http://172.30.0.16:8888,DK-141=http://172.30.0.17:8888,DK-145=http://172.30.0.18:8888
+      - LIBGEN_LANE_NAME=FI-1
+      - LIBGEN_PROXIES=FI-2=http://172.30.0.11:8888,DK-1=http://172.30.0.12:8888,DK-2=http://172.30.0.14:8888,NL-1=http://172.30.0.15:8888,NL-2=http://172.30.0.16:8888,CH-1=http://172.30.0.17:8888,IS-1=http://172.30.0.18:8888
+      # Lets the app reconnect a lane that LibGen keeps refusing (from .env).
+      - LIBGEN_GLUETUN_API_KEY=${LIBGEN_GLUETUN_API_KEY:-}
     volumes:
       - ./docker-data/config:/config
       - D:/Papers/inbox:/downloads

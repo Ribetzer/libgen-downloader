@@ -6,6 +6,27 @@ const PROBE_TIMEOUT_MS = 20_000;
 /** How long a lane sits out after LibGen stopped answering through it. */
 const BENCH_MS = 5 * 60_000;
 
+/**
+ * When a proxied lane is moved to another server (`rotate`): refused under
+ * LibGen's file limit this many times in ROTATE_WINDOW_MS, sharing an exit IP
+ * with another lane, or not answering for ROTATE_DOWN_MS. Never more often
+ * than ROTATE_MIN_GAP_MS for one lane, so a country whose every server is
+ * busy is not cycled through without pause.
+ */
+export const ROTATE_REFUSALS = 3;
+export const ROTATE_WINDOW_MS = 30 * 60_000;
+export const ROTATE_DOWN_MS = 10 * 60_000;
+export const ROTATE_MIN_GAP_MS = 20 * 60_000;
+
+export interface LaneServiceOptions {
+  /** Reconnects a lane's VPN, landing it on another server. Unset: never. */
+  rotate?: (lane: DownloadLane) => Promise<void>;
+  /** How often a lane was refused under the file limit within `withinMs`. */
+  refusals?: (laneKey: string, withinMs: number) => number;
+  /** A lane has been rotated: whatever was known about its old IP is stale. */
+  onRotated?: (lane: DownloadLane) => void;
+}
+
 export interface LaneState {
   key: string;
   /** Whether it goes through another VPN connection's proxy. */
@@ -46,8 +67,15 @@ export class LaneService {
   private states = new Map<string, LaneState>();
   private benchedUntil = new Map<string, number>();
   private timer: ReturnType<typeof setInterval> | undefined;
+  /** When each lane stopped answering; cleared when it answers. */
+  private downSince = new Map<string, number>();
+  private rotatedAt = new Map<string, number>();
+  private rotating = new Set<string>();
 
-  constructor(readonly lanes: DownloadLane[]) {
+  constructor(
+    readonly lanes: DownloadLane[],
+    private options: LaneServiceOptions = {}
+  ) {
     for (const lane of lanes) {
       this.states.set(lane.key, {
         key: lane.key,
@@ -87,7 +115,76 @@ export class LaneService {
   /** Probes every lane at once. Resolves with whether any lane changed state. */
   async probe(): Promise<boolean> {
     const results = await Promise.all(this.lanes.map((lane) => this.probeLane(lane)));
+    await this.rotateWhereNeeded();
     return results.some(Boolean);
+  }
+
+  /**
+   * Moves lanes that are doing badly to another server. A Proton exit is
+   * shared with strangers, so one IP can sit over LibGen's limit however
+   * slowly we ask - and waiting that out, as the pacer does, gets nothing
+   * done; a different server usually does. Only proxied lanes: the main one
+   * carries the app's own connection.
+   */
+  private async rotateWhereNeeded(): Promise<void> {
+    const { rotate, refusals } = this.options;
+    if (!rotate) {
+      return;
+    }
+
+    const now = Date.now();
+    const seenIPs = new Map<string, string>();
+    const due: { lane: DownloadLane; reason: string }[] = [];
+    for (const lane of this.lanes) {
+      const state = this.states.get(lane.key) as LaneState;
+      let sharedWith: string | undefined;
+      if (state.ready && state.ip) {
+        sharedWith = seenIPs.get(state.ip);
+      }
+      if (state.ready && state.ip && !sharedWith) {
+        seenIPs.set(state.ip, lane.key);
+      }
+      if (!lane.proxy || this.rotating.has(lane.key)) {
+        continue;
+      }
+      if (now - (this.rotatedAt.get(lane.key) ?? 0) < ROTATE_MIN_GAP_MS) {
+        continue;
+      }
+
+      const refused = refusals?.(lane.key, ROTATE_WINDOW_MS) ?? 0;
+      const downFor = now - (this.downSince.get(lane.key) ?? now);
+      if (sharedWith) {
+        due.push({ lane, reason: `same exit IP as ${sharedWith}` });
+      } else if (refused >= ROTATE_REFUSALS) {
+        due.push({ lane, reason: `refused under LibGen's limit ${refused} times in 30 min` });
+      } else if (downFor >= ROTATE_DOWN_MS) {
+        due.push({ lane, reason: `not answering for ${Math.round(downFor / 60_000)} min` });
+      }
+    }
+
+    await Promise.all(due.map(({ lane, reason }) => this.rotateLane(lane, reason)));
+  }
+
+  private async rotateLane(lane: DownloadLane, reason: string): Promise<void> {
+    const { rotate, onRotated } = this.options;
+    if (!rotate) {
+      return;
+    }
+
+    this.rotating.add(lane.key);
+    this.rotatedAt.set(lane.key, Date.now());
+    const state = this.states.get(lane.key) as LaneState;
+    // Out of rotation until a probe sees it up on its new server.
+    state.ready = false;
+    console.log(`Lane ${lane.key}: ${reason} - moving it to another server`);
+    try {
+      await rotate(lane);
+      onRotated?.(lane);
+    } catch (error: unknown) {
+      console.log(`Lane ${lane.key}: could not reconnect (${(error as Error).message})`);
+    } finally {
+      this.rotating.delete(lane.key);
+    }
   }
 
   private async probeLane(lane: DownloadLane): Promise<boolean> {
@@ -119,6 +216,9 @@ export class LaneService {
     state.ready = ready;
     if (ip) {
       state.ip = ip;
+      this.downSince.delete(lane.key);
+    } else if (!this.downSince.has(lane.key)) {
+      this.downSince.set(lane.key, Date.now());
     }
     state.checkedAt = new Date().toISOString();
     return changed;

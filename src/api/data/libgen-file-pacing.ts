@@ -34,9 +34,13 @@ interface LaneState {
    * refusal costs the lane a five-minute blackout.
    */
   intervalMs: number;
+  /** When this lane was refused under the limit, for deciding to rotate it. */
+  refusedAt: number[];
 }
 
 const lanes = new Map<string, LaneState>();
+/** How long a refusal is remembered; longer than any rotation rule asks about. */
+const REFUSAL_MEMORY_MS = 60 * 60_000;
 let minIntervalMs = LIBGEN_FILE_MIN_INTERVAL_MS;
 
 /**
@@ -62,7 +66,7 @@ export const paceLibgenPage = async (key = DIRECT_LANE): Promise<void> => {
 const laneState = (lane: string): LaneState => {
   let state = lanes.get(lane);
   if (!state) {
-    state = { lastRequestAt: 0, cooldownUntil: 0, intervalMs: minIntervalMs };
+    state = { lastRequestAt: 0, cooldownUntil: 0, intervalMs: minIntervalMs, refusedAt: [] };
     lanes.set(lane, state);
   }
 
@@ -139,6 +143,8 @@ export const paceLibgenFile = async (
 /** Refused under the file limit: this lane asks less often from now on. */
 export const slowLibgenLane = (lane = DIRECT_LANE): void => {
   const state = laneState(lane);
+  const now = Date.now();
+  state.refusedAt = [...state.refusedAt.filter((at) => now - at < REFUSAL_MEMORY_MS), now];
   state.intervalMs = Math.min(
     Math.max(state.intervalMs, minIntervalMs) * 1.5,
     Math.max(LIBGEN_FILE_MAX_INTERVAL_MS, minIntervalMs)
@@ -149,6 +155,21 @@ export const slowLibgenLane = (lane = DIRECT_LANE): void => {
 export const noteLibgenFileStarted = (lane = DIRECT_LANE): void => {
   const state = laneState(lane);
   state.intervalMs = Math.max(minIntervalMs, state.intervalMs - 1000);
+};
+
+/** How many times this lane was refused under the limit in the last `withinMs`. */
+export const libgenLaneRefusals = (lane: string, withinMs: number): number => {
+  const now = Date.now();
+  return (lanes.get(lane)?.refusedAt ?? []).filter((at) => now - at < withinMs).length;
+};
+
+/**
+ * Forget everything about a lane. After its VPN reconnects to another server
+ * it has a new exit IP, with an allowance of its own and none of the old
+ * one's cooldown, spacing or refusals.
+ */
+export const resetLibgenLane = (lane: string): void => {
+  lanes.delete(lane);
 };
 
 /** This lane's current spacing between file requests. */

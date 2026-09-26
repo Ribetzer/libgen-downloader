@@ -192,6 +192,21 @@ where Docker service names don't exist. `LIBGEN_PROXIES`
 (`NAME=http://ip:8888,…`) lists them, and `LIBGEN_LANE_NAME` names the main
 connection.
 
+- **Lanes name a country, not a server.** Every gluetun runs
+  `VPN_SERVICE_PROVIDER=protonvpn` with its own WireGuard private key
+  (`LIBGEN_WG_KEY_*` in `.env`) and `SERVER_COUNTRIES` (Finland, Denmark,
+  Netherlands, Switzerland, Iceland); gluetun picks a server there at random
+  on each connect. A leftover `/gluetun/wireguard/wg0.conf` is read whatever
+  the provider and pins an endpoint ("endpoint port is set" crash loop), so
+  none may be in a lane's data folder. Restarting the main gluetun replaces
+  the network namespace the app lives in: restart `libgen-downloader` after it.
+- **Rotation:** `LaneService.rotateWhereNeeded` reconnects a proxied lane
+  through gluetun's control server (`gluetun-control.ts`, port 8000,
+  `X-API-Key` = `LIBGEN_GLUETUN_API_KEY`, the same key in each lane's
+  `auth/config.toml`) when LibGen refused it under the limit 3 times in
+  30 min (`libgenLaneRefusals`), it shares an exit IP with another lane, or it
+  has not answered for 10 min; at most once per 20 min per lane. The pacer
+  then forgets the lane (`resetLibgenLane`): a new IP has a fresh allowance.
 - **Pacing:** each lane (`DownloadLane`) is paced separately by the pacer.
 - **One lane per download:** a download's detail page and its file go out on
   the same lane, because the `ads.php` key is issued to the address that

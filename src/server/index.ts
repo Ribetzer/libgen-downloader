@@ -2,7 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { parseIdentifierList } from "../api/data/file";
 import { extractMD5 } from "../api/data/md5";
+import { libgenLaneRefusals, resetLibgenLane } from "../api/data/libgen-file-pacing";
 import { CorpusService } from "./corpus-service";
+import { gluetunControlURL, restartGluetunVPN } from "./gluetun-control";
 import { ItemStore, NewQueueItem, QueueItem } from "./database";
 import { LaneService, parseProxyList } from "./lane-service";
 import { MetadataService } from "./metadata-service";
@@ -42,6 +44,10 @@ const ANNAS_DOMAIN = process.env.LIBGEN_ANNAS_DOMAIN || DEFAULT_ANNAS_DOMAIN;
 // process's own connection is always a lane too, named by LIBGEN_LANE_NAME.
 const PROXY_LANES = parseProxyList(process.env.LIBGEN_PROXIES || "");
 const MAIN_LANE_NAME = process.env.LIBGEN_LANE_NAME || "main";
+// The key gluetun's control server wants (`X-API-Key`), shared by every lane
+// container. Set, lanes that LibGen keeps refusing are moved to another server;
+// unset, lanes stay where they are.
+const GLUETUN_API_KEY = process.env.LIBGEN_GLUETUN_API_KEY || "";
 const LANE_CHECK_MS = 60_000;
 // How many items download at once; see QUEUE_CONCURRENCY. With extra lanes,
 // two per lane unless set: one connection per exit IP leaves most of each
@@ -98,7 +104,25 @@ const notifyFinished = (item: QueueItem) => {
   });
 };
 
-const lanes = new LaneService([{ key: MAIN_LANE_NAME }, ...PROXY_LANES]);
+const rotateLane = async (lane: { proxy?: string }): Promise<void> => {
+  if (!lane.proxy) {
+    return;
+  }
+  await restartGluetunVPN(gluetunControlURL(lane.proxy), GLUETUN_API_KEY);
+};
+
+let rotate: typeof rotateLane | undefined;
+if (GLUETUN_API_KEY) {
+  rotate = rotateLane;
+}
+
+const lanes = new LaneService([{ key: MAIN_LANE_NAME }, ...PROXY_LANES], {
+  rotate,
+  refusals: libgenLaneRefusals,
+  // A new exit IP starts with LibGen's full allowance and none of the old
+  // one's cooldown or slowed spacing.
+  onRotated: (lane) => resetLibgenLane(lane.key),
+});
 
 const queue = new QueueService({
   store,
