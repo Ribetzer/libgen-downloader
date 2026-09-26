@@ -139,6 +139,10 @@ export class ItemStore {
   constructor(path: string) {
     this.database = new Database(path, { create: true });
     this.database.run("PRAGMA journal_mode = WAL");
+    // Wait for another connection's write lock instead of throwing: without
+    // this, one UPDATE run by hand against the live file crashed the server
+    // with SQLITE_BUSY, thrown from a download's progress callback.
+    this.database.run("PRAGMA busy_timeout = 10000");
     this.database.run(`
       CREATE TABLE IF NOT EXISTS items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -290,13 +294,18 @@ export class ItemStore {
    * a captcha - which retrying at once cannot outlast. `updated_at` is left
    * alone: the row is back in the queue, not newly finished.
    */
-  defer(id: number, delayMs: number, note: string): void {
+  defer(id: number, delayMs: number, note: string, counted = true): void {
+    // An uncounted wait - an outage, not the file - leaves `deferrals` alone.
+    let increment = 0;
+    if (counted) {
+      increment = 1;
+    }
     this.database.run(
       `UPDATE items
           SET status = 'queued', error = ?, progress = 0,
-              retry_at = datetime('now', ?), deferrals = COALESCE(deferrals, 0) + 1
+              retry_at = datetime('now', ?), deferrals = COALESCE(deferrals, 0) + ?
         WHERE id = ?`,
-      [note, `+${Math.round(delayMs / 1000)} seconds`, id]
+      [note, `+${Math.round(delayMs / 1000)} seconds`, increment, id]
     );
   }
 

@@ -147,21 +147,27 @@ if (collapsed > 0) {
 const scheduleMirrorRefresh = (delayMs: number) => {
   setTimeout(() => {
     void (async () => {
-      const refreshed = await mirrors.refresh();
-
-      storage.forget();
-      const volumeReady = await storage.isReady();
-
+      // Re-armed whatever happens: this timer is the only thing that clears
+      // "unreachable", so a refresh that throws must not end the chain.
       let nextDelayMs = MIRROR_RETRY_MS;
-      if (refreshed && volumeReady) {
-        nextDelayMs = MIRROR_REFRESH_MS;
-      }
+      try {
+        const refreshed = await mirrors.refresh();
 
-      if (refreshed) {
-        queue.start();
-      }
+        storage.forget();
+        const volumeReady = await storage.isReady();
 
-      scheduleMirrorRefresh(nextDelayMs);
+        if (refreshed && volumeReady) {
+          nextDelayMs = MIRROR_REFRESH_MS;
+        }
+
+        if (refreshed) {
+          queue.start();
+        }
+      } catch (error: unknown) {
+        console.error(`Mirror refresh failed: ${(error as Error).message}`);
+      } finally {
+        scheduleMirrorRefresh(nextDelayMs);
+      }
     })();
   }, delayMs).unref?.();
 };

@@ -3,7 +3,14 @@ import { DEFAULT_ANNAS_DOMAIN, fetchAnnasDownloadURL } from "../api/sources/anna
 import { DIRECT_LANE, libgenFileCooldownUntil } from "../api/data/libgen-file-pacing";
 import type { DownloadResult } from "../api/models/download-result";
 import { downloadRequestInit } from "../api/sources";
-import { ANNAS_MIN_BYTES, DEFER_SCHEDULE_MS, QUEUE_RETRY_MS } from "../settings";
+import {
+  ANNAS_MIN_BYTES,
+  DEFER_SCHEDULE_MS,
+  OUTAGE_GRACE_MS,
+  OUTAGE_RETRY_MS,
+  OUTAGE_WINDOW_MS,
+  QUEUE_RETRY_MS,
+} from "../settings";
 import { ItemStore, NewQueueItem, QueueItem, TERMINAL_STATUSES } from "./database";
 import { MirrorService } from "./mirror-service";
 import { StorageService } from "./storage-service";
@@ -99,6 +106,12 @@ export class QueueService {
   private annasDomain: string;
   /** Anna's said the key can fetch nothing more today: leave it until then. */
   private annasPausedUntil = 0;
+  /**
+   * When anything last finished downloading; see OUTAGE_WINDOW_MS. Starts at
+   * construction, so a queue that has only just started is not read as an
+   * outage.
+   */
+  private lastSuccessAt = Date.now();
 
   constructor({
     store,
@@ -225,7 +238,24 @@ export class QueueService {
    * Once the waits are used up it fails, saying how long it was given.
    */
   private deferOrFail(id: number, reason: string): void {
-    const deferrals = this.store.get(id)?.deferrals ?? 0;
+    const item = this.store.get(id);
+    // SQLite's `datetime('now')` is UTC without a zone marker.
+    const queuedAt = Date.parse(`${(item?.createdAt ?? "").replace(" ", "T")}Z`);
+    const quietMs = Date.now() - this.lastSuccessAt;
+    if (quietMs >= OUTAGE_WINDOW_MS && Date.now() - queuedAt < OUTAGE_GRACE_MS) {
+      const minutes = Math.round(quietMs / 60_000);
+      this.store.defer(
+        id,
+        OUTAGE_RETRY_MS,
+        `${reason} - nothing has downloaded for ${minutes} min, so LibGen looks down;` +
+          " trying again later",
+        false
+      );
+      this.publish(id, "item-updated");
+      return;
+    }
+
+    const deferrals = item?.deferrals ?? 0;
     const delayMs = this.deferScheduleMs[deferrals];
     if (delayMs === undefined) {
       const hours = this.deferScheduleMs.reduce((sum, ms) => sum + ms, 0) / 3_600_000;
@@ -623,6 +653,7 @@ export class QueueService {
 
   /** Records a completed download, whichever route produced it. */
   private finish(id: number, result: DownloadResult, mirror: string): void {
+    this.lastSuccessAt = Date.now();
     let status: QueueItem["status"] = "downloaded";
     if (result.skipped) {
       status = "skipped";

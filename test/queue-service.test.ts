@@ -824,6 +824,26 @@ describe("deferring transient failures", () => {
     expect(store.get(item.id)).toMatchObject({ status: "failed", deferrals: 0 });
   });
 
+  it("does not spend a wait when nothing has downloaded for a while", async () => {
+    const queue = createQueue({
+      deferScheduleMs: [3_600_000],
+      resolveDOI: async () => ({ reason: "LibGen could not be reached", transient: true }),
+    });
+    // Twenty minutes with no download finishing: an outage, not this paper.
+    const realNow = Date.now();
+    const clock = spyOn(Date, "now").mockReturnValue(realNow + 20 * 60_000);
+    try {
+      const idle = waitForIdle(queue);
+      const item = queue.add({ doi: "10.1145/1" });
+      await idle;
+
+      expect(store.get(item.id)).toMatchObject({ status: "queued", deferrals: 0 });
+      expect(store.get(item.id)?.error).toContain("LibGen looks down");
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it("defers a DOI lookup that could not be completed", async () => {
     const queue = createQueue({
       deferScheduleMs: [3_600_000],

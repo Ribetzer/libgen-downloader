@@ -1,4 +1,8 @@
-import { CONFIGURATION_URL } from "../../settings";
+import {
+  CONFIGURATION_URL,
+  CONFIG_FETCH_TIMEOUT_MS,
+  MIRROR_PROBE_TIMEOUT_MS,
+} from "../../settings";
 
 export type MirrorType = "libgen-plus";
 
@@ -14,7 +18,9 @@ export interface Config {
 
 export async function fetchConfig(): Promise<Config> {
   try {
-    const response = await fetch(CONFIGURATION_URL);
+    const response = await fetch(CONFIGURATION_URL, {
+      signal: AbortSignal.timeout(CONFIG_FETCH_TIMEOUT_MS),
+    });
     const json = await response.json();
     const config = json as Record<string, unknown>;
 
@@ -33,7 +39,7 @@ export async function findMirror(
 ): Promise<Mirror | undefined> {
   for (const mirror of mirrors) {
     try {
-      await fetch(mirror.src);
+      await fetch(mirror.src, { signal: AbortSignal.timeout(MIRROR_PROBE_TIMEOUT_MS) });
       return mirror;
     } catch {
       onMirrorFail(mirror.src);

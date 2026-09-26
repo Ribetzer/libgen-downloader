@@ -77,6 +77,14 @@ export const QUEUE_RETRY_MS = 15_000;
 // is not.
 export const CORPUS_TIMEOUT_MS = 5000;
 
+// How long the config fetch and each mirror probe may take. Neither had a
+// limit, and a request sent while the VPN tunnel was still coming up never
+// settled: the server sat in its startup refresh with the web UI unserved, and
+// later a hung refresh stopped the refresh timer re-arming at all, so mirrors
+// marked unreachable stayed that way for hours after LibGen came back.
+export const CONFIG_FETCH_TIMEOUT_MS = 20_000;
+export const MIRROR_PROBE_TIMEOUT_MS = 20_000;
+
 export const SEARCH_PAGE_SIZE = 25;
 
 // LibGen's `ads.php` - the only page carrying the per-request `key` that
@@ -177,6 +185,18 @@ export const LIBGEN_BUSY_COOLDOWN_MS = 60_000;
 // straight away cannot outlast an outage measured in hours, so the waits
 // lengthen; once they are used up the item fails as it always did.
 export const DEFER_SCHEDULE_MS = [30 * 60_000, 2 * 3_600_000, 6 * 3_600_000, 12 * 3_600_000];
+
+// An outage is not the file's fault. When nothing at all has downloaded for
+// OUTAGE_WINDOW_MS, a transient failure is put back for OUTAGE_RETRY_MS
+// without using up one of its waits: LibGen's database refusing everyone
+// overnight, then a wave of 502s at midday, spent three of the four waits of
+// 330 papers, leaving them parked until the small hours while every mirror
+// answered again. Only for an item queued within OUTAGE_GRACE_MS, so one that
+// genuinely cannot be had - and fails while nothing else succeeds either -
+// still fails in the end instead of retrying forever.
+export const OUTAGE_WINDOW_MS = 15 * 60_000;
+export const OUTAGE_RETRY_MS = 30 * 60_000;
+export const OUTAGE_GRACE_MS = 3 * 24 * 3_600_000;
 
 // Wiley's text-and-data-mining API, for the open-access Wiley PDFs its website
 // keeps behind Cloudflare's check. Its terms allow 60 requests per 10 minutes,

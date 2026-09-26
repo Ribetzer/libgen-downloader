@@ -310,6 +310,20 @@ connection.
   `ANNAS_MIN_BYTES` (15 MB), from an earlier attempt (`item.total`) or this
   response's announced size. Small papers get full patience; Anna's is still
   asked if LibGen gives up on one entirely.
+- **An outage doesn't spend a paper's waits.** When nothing has downloaded
+  for `OUTAGE_WINDOW_MS` (15 min), a transient failure is deferred
+  `OUTAGE_RETRY_MS` without incrementing `deferrals` (`ItemStore.defer(...,
+  counted = false)`), for items queued within `OUTAGE_GRACE_MS` (3 days). One
+  night of LibGen's database refusing everyone, then a 502 wave, had spent
+  three of four waits on 330 papers and parked them until 2 am while the
+  mirrors answered again.
+- **Every startup/refresh request has a timeout** (`CONFIG_FETCH_TIMEOUT_MS`,
+  `MIRROR_PROBE_TIMEOUT_MS`). A fetch sent while the tunnel was coming up
+  never settled: the server sat in `mirrors.refresh()` before `Bun.serve`,
+  so the UI was down, and a hung refresh stopped the refresh timer re-arming.
+  The timer now re-arms in a `finally`.
+- **The queue database waits for a lock** (`PRAGMA busy_timeout`): an UPDATE
+  run by hand against the live file crashed the server with `SQLITE_BUSY`.
 - **Concurrency:** defaults to two workers per lane.
 
 Transfers get their own, larger budget: `DOWNLOAD_ATTEMPT_COUNT` (6) per mirror across `MAX_DOWNLOAD_MIRRORS` (4), spaced by `DOWNLOAD_BACKOFF_MS` and clamped in wall-clock terms by `DOWNLOAD_TOTAL_BUDGET_MS` (45 min). **An attempt count is not a time limit** — 24 tries at a few minutes each is hours with the sequential queue blocked behind one file, which is what the budget exists to bound. `THROTTLE_BACKOFF_MS` is separate and much longer: a mirror answering 429/503 is asking for a slower pace, not reporting a dropped connection.
