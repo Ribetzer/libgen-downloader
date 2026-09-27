@@ -203,6 +203,25 @@ export class QueueService {
    * - the disk, not the history, decides whether it is still there.
    */
   add(entry: NewQueueItem): QueueItem {
+    const item = this.addWithoutStarting(entry);
+    this.start();
+    return item;
+  }
+
+  /**
+   * A whole list in one transaction, and the workers woken once at the end:
+   * a commit per line made an upload of thousands hold the event loop for
+   * minutes.
+   */
+  addMany(entries: NewQueueItem[]): QueueItem[] {
+    const items = this.store.inTransaction(() =>
+      entries.map((entry) => this.addWithoutStarting(entry))
+    );
+    this.start();
+    return items;
+  }
+
+  private addWithoutStarting(entry: NewQueueItem): QueueItem {
     const existing = this.store.findByIdentity(entry.md5, entry.url, entry.doi);
     if (existing && !TERMINAL_STATUSES.includes(existing.status)) {
       return existing;
@@ -216,18 +235,15 @@ export class QueueService {
         url: existing.url || entry.url || undefined,
         origin: existing.origin || entry.origin || undefined,
       });
-      this.retry(existing.id);
+      if (this.store.requeue(existing.id)) {
+        this.publish(existing.id, "item-updated");
+      }
       return this.store.get(existing.id) as QueueItem;
     }
 
     const item = this.store.add(entry);
     this.emit({ type: "item-added", item });
-    this.start();
     return item;
-  }
-
-  addMany(entries: NewQueueItem[]): QueueItem[] {
-    return entries.map((entry) => this.add(entry));
   }
 
   /**

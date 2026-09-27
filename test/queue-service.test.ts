@@ -514,6 +514,28 @@ describe("QueueService keeps one row per file", () => {
     expect(again.id).not.toBe(downloaded.id);
     expect(store.get(downloaded.id)?.status).toBe("downloaded");
   });
+
+  it("adds a long list in one go, still collapsing repeats and requeueing failures", () => {
+    const queue = createPausedQueue();
+    const failed = store.add({ doi: "10.1/failed" });
+    store.update(failed.id, { status: "failed" });
+    const dois = Array.from({ length: 3000 }, (_, index) => `10.1/${index}`);
+
+    const started = performance.now();
+    const added = queue.addMany([
+      ...dois.map((doi) => ({ doi, origin: "list" })),
+      { doi: "10.1/0", origin: "list" },
+      { doi: "10.1/FAILED", origin: "list" },
+    ]);
+    const elapsedMs = performance.now() - started;
+
+    expect(added).toHaveLength(3002);
+    expect(added[3000].id).toBe(added[0].id);
+    expect(added[3001]).toMatchObject({ id: failed.id, status: "queued" });
+    expect(store.listActive()).toHaveLength(3001);
+    // Seconds per thousand before the identity indexes and the single commit.
+    expect(elapsedMs).toBeLessThan(2000);
+  });
 });
 
 describe("QueueService with an item queued by DOI alone", () => {

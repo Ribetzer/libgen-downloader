@@ -178,6 +178,12 @@ export class ItemStore {
       }
     }
     this.database.run("CREATE INDEX IF NOT EXISTS items_status ON items (status)");
+    // `findByIdentity` runs once per queued line. Without these, an uploaded
+    // list of a few thousand scanned the whole table once per line, blocking
+    // the server (and every download's progress) for the length of the upload.
+    this.database.run("CREATE INDEX IF NOT EXISTS items_md5 ON items (md5)");
+    this.database.run("CREATE INDEX IF NOT EXISTS items_url ON items (url)");
+    this.database.run("CREATE INDEX IF NOT EXISTS items_doi ON items (lower(doi))");
     // A row queued by DOI alone, before `origin` existed, can only have come
     // from an uploaded list: `POST /api/queue` looks a DOI up before adding it.
     this.database.run(
@@ -364,6 +370,11 @@ export class ItemStore {
    * queued by DOI alone and not yet looked up, the same DOI. DOIs are
    * case-insensitive. A row with none of them matches nothing.
    */
+  /** Run `work` as one transaction: one commit for a whole batch of writes. */
+  inTransaction<T>(work: () => T): T {
+    return this.database.transaction(work)();
+  }
+
   findByIdentity(md5?: string, url?: string, doi?: string): QueueItem | undefined {
     let condition = "lower(doi) = lower(?)";
     let value = doi;
