@@ -153,6 +153,33 @@ export const readFileNameFromURL = (downloadURL: string): string => {
   }
 };
 
+/**
+ * The filename a `content-disposition` header names, read as leniently as a
+ * browser does. The `content-disposition` package is strict: KIT's repository
+ * (publikationen.bibliothek.kit.edu) ends the header with a stray `;` -
+ * `attachment; filename="….pdf";` - and the package threw "invalid parameter
+ * format", failing four open-access CGF papers that were being served fine.
+ * Only the extension is taken from this name anyway (names are rebuilt from the
+ * title), so an unreadable header means the URL's name, not a failure.
+ */
+export const readDispositionFilename = (header: string): string => {
+  const candidates = [header, header.trim().replace(/;+\s*$/, "")];
+  for (const candidate of candidates) {
+    try {
+      const filename = contentDisposition.parse(candidate).parameters.filename;
+      if (filename) {
+        return filename;
+      }
+    } catch {
+      // Try the next reading.
+    }
+  }
+
+  const quoted =
+    /filename\s*=\s*"([^"]+)"/i.exec(header) ?? /filename\s*=\s*([^;\s]+)/i.exec(header);
+  return quoted?.[1] ?? "";
+};
+
 export const downloadFile = async ({
   downloadStream,
   outputDirectory,
@@ -168,7 +195,7 @@ export const downloadFile = async ({
   const downloadContentDisposition = downloadStream.headers.get("content-disposition");
   const declaredName = (() => {
     if (downloadContentDisposition) {
-      return contentDisposition.parse(downloadContentDisposition).parameters.filename;
+      return readDispositionFilename(downloadContentDisposition) || fallbackFileName;
     }
 
     return fallbackFileName;
