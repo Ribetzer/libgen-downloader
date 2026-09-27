@@ -185,19 +185,20 @@ export const openAccessSource: Source = {
     }
 
     const { doi } = parsedQuery;
-    let record: UnpaywallRecord;
+    let record: UnpaywallRecord = {};
+    let unknownToUnpaywall = false;
     try {
       const response = await get(
         `${UNPAYWALL_URL}/${encodeURIComponent(doi)}?email=${encodeURIComponent(contactEmail())}`,
         "application/json"
       );
       if (response.status === 404) {
-        return { status: "ok", items: [] };
-      }
-      if (!response.ok) {
+        unknownToUnpaywall = true;
+      } else if (response.ok) {
+        record = (await response.json()) as UnpaywallRecord;
+      } else {
         return { status: "error", message: `Unpaywall answered HTTP ${response.status}` };
       }
-      record = (await response.json()) as UnpaywallRecord;
     } catch (error: unknown) {
       return { status: "error", message: `Couldn't reach Unpaywall (${(error as Error).message})` };
     }
@@ -207,6 +208,19 @@ export const openAccessSource: Source = {
       if (pdf) {
         return { status: "ok", items: [toResult(doi, record, pdf, "openaccess")] };
       }
+    }
+
+    // Unpaywall indexes Crossref DOIs only. A DataCite DOI - the Eurographics
+    // Digital Library, Zenodo, a university's theses - is a 404 there however
+    // open it is, so its own landing page is read instead, for the PDF it
+    // declares. Measured on 10.2312/sr.20251195: diglib.eg.org names the PDF in
+    // `citation_pdf_url` and serves it, through the VPN, to an honest request.
+    if (unknownToUnpaywall) {
+      const pdf = await workingPDF({ url: `https://doi.org/${doi}` });
+      if (pdf) {
+        return { status: "ok", items: [toResult(doi, record, pdf, "openaccess")] };
+      }
+      return { status: "ok", items: [] };
     }
 
     // Wiley's own copy, through the route Wiley offers scripts - its website

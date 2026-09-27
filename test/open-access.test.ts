@@ -306,3 +306,34 @@ describe("Wiley's TDM API", () => {
     expect(isWiley({ publisher: "Wiley", oa_locations: [] })).toBe(true);
   });
 });
+
+describe("a DOI Unpaywall does not index", () => {
+  it("reads the DOI's own landing page for the PDF it declares", async () => {
+    const landing = "https://diglib.eg.org/items/48084db7";
+    const pdf = "https://diglib.eg.org/bitstreams/b5a49b8c/download";
+    mockFetch(async (input) => {
+      const url = getRequestURL(input);
+      if (url.startsWith("https://api.unpaywall.org/")) {
+        return new Response("<html>not found</html>", { status: 404 });
+      }
+      if (url === "https://doi.org/10.2312/sr.20251195") {
+        const page = new Response(
+          `<html><head><meta name="citation_pdf_url" content="${pdf}"></head></html>`,
+          { headers: { "content-type": "text/html" } }
+        );
+        Object.defineProperty(page, "url", { value: landing });
+        return page;
+      }
+      if (url === pdf) {
+        return pdfResponse();
+      }
+      return new Response("", { status: 404 });
+    });
+
+    const outcome = await openAccessSource.search({ kind: "doi", doi: "10.2312/sr.20251195" }, 1, {
+      candidates: [],
+    });
+
+    expect(itemsOf(outcome)[0]).toMatchObject({ source: "openaccess", downloadURL: pdf });
+  });
+});
