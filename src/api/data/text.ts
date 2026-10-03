@@ -68,6 +68,47 @@ const joinSmallCaps = (value: string): string =>
     }
   );
 
+const CLOSING_TAG_AT_END = new RegExp(String.raw`</(?:${TAG_NAMES})>$`, "iu");
+const OPENING_TAG_AT_START = new RegExp(String.raw`^<(?:${TAG_NAMES})(?:\s[^>]*)?>`, "iu");
+// A lone letter starts a word the markup finishes: small caps (`L<scp>EVEL`)
+// or a symbol (`D<sup>3</sup>`).
+const LONE_LETTER_AT_END = /(?:^|[^\p{L}\p{N}])\p{L}$/u;
+const WORD_CHARACTER_AT_START = /^[\p{L}\p{N}]/u;
+
+/**
+ * What layout stood for, read from either side of it. After a closing tag it
+ * is a space before a word (`<sup>2</sup>⏎space curves`) and nothing before
+ * another tag or punctuation (`<i>N</i>⏎‐PolyVector`). Before an opening tag
+ * it is a space after a word (`Designing⏎<i>N</i>`) and nothing after a lone
+ * letter or at the start.
+ */
+const resolveLayout = (value: string): string =>
+  value.replaceAll(LAYOUT, (_match: string, offset: number) => {
+    const before = value.slice(0, offset);
+    const after = value.slice(offset + 1);
+    if (CLOSING_TAG_AT_END.test(before)) {
+      if (WORD_CHARACTER_AT_START.test(after)) {
+        return " ";
+      }
+      return "";
+    }
+    if (OPENING_TAG_AT_START.test(after)) {
+      if (before.trim() === "" || LONE_LETTER_AT_END.test(before)) {
+        return "";
+      }
+      return " ";
+    }
+    return " ";
+  });
+
+/**
+ * A lower-case letter run straight into an italic capitalised word is a
+ * dropped space - "Special Issue of the<i>Journal of Graphics Tools</i>" in
+ * Crossref's own record. Small caps are `<scp>` and symbols are single
+ * letters (`<i>L</i>`), so neither matches.
+ */
+const ITALIC_NAME_AFTER_WORD = /(?<=\p{Ll})(?=<(?:i|em|italic)>\p{Lu}\p{Ll})/gu;
+
 const NAMED: Record<string, string> = {
   amp: "&",
   lt: "<",
@@ -132,12 +173,15 @@ const decodeEntities = (value: string): string =>
 
 /**
  * Plain text from a title, venue or name: markup removed (its layout
- * whitespace with it), entities decoded, whitespace collapsed. Tags are
- * stripped before entities are decoded, so an encoded `&lt;i&gt;` stays text.
+ * whitespace read as a space or nothing), entities decoded, whitespace
+ * collapsed. Tags are stripped before entities are decoded, so an encoded
+ * `&lt;i&gt;` stays text.
  */
 export const cleanText = (value: string): string =>
   decodeEntities(
-    joinSmallCaps(markLayout(value)).replaceAll(LAYOUT, "").replaceAll(new RegExp(TAG, "giu"), "")
+    resolveLayout(joinSmallCaps(markLayout(value)))
+      .replaceAll(ITALIC_NAME_AFTER_WORD, " ")
+      .replaceAll(new RegExp(TAG, "giu"), "")
   )
     .replaceAll(/\s+/gu, " ")
     .trim();
