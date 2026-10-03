@@ -22,6 +22,35 @@ describe("cleanText", () => {
     ).toBe("Special Issue: Data-Driven Design (D3)");
   });
 
+  // Real Crossref titles stored in the RAG database (2026-10-03).
+  it("keeps the space between a word and pretty-printed markup", () => {
+    expect(
+      cleanText(
+        "Designing\n                    <i>N</i>\n                    ‐PolyVector Fields with Complex Polynomials"
+      )
+    ).toBe("Designing N‐PolyVector Fields with Complex Polynomials");
+    expect(
+      cleanText(
+        "Local generalized Hermite interpolation by quartic\n            <i>C</i>\n            <sup>2</sup>\n            space curves"
+      )
+    ).toBe("Local generalized Hermite interpolation by quartic C2 space curves");
+    expect(
+      cleanText(
+        "Orthotropic\n            <i>k</i>\n            -nearest foams for additive manufacturing"
+      )
+    ).toBe("Orthotropic k-nearest foams for additive manufacturing");
+  });
+
+  it("restores the space Crossref dropped before an italic name", () => {
+    expect(cleanText("SIGRAD 2014 Special Issue of the<i>Journal of Graphics Tools</i>")).toBe(
+      "SIGRAD 2014 Special Issue of the Journal of Graphics Tools"
+    );
+    expect(cleanText("Constructing <i>L</i><sub>&#x221e;</sub> Voronoi")).toBe(
+      "Constructing L∞ Voronoi"
+    );
+    expect(cleanText("C<scp>onsistent</scp>")).toBe("Consistent");
+  });
+
   it("keeps a single space beside a tag, which is a real space", () => {
     expect(cleanText("Will GPT-4 Run <i>DOOM</i>?")).toBe("Will GPT-4 Run DOOM?");
     expect(cleanText("The <i>p</i>-Laplacian")).toBe("The p-Laplacian");
