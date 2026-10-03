@@ -385,6 +385,16 @@ are also matched by DOI (case-insensitive) when they have no MD5 or URL.
 `resolveRequestedItem` is a function declaration on purpose: the queue can
 start draining before the module body reaches it.
 
+**A BibTeX export goes through the same drop zone** (`parseUploadedList`,
+`src/api/data/bibtex.ts`). It is recognised by its content, because the upload
+is sent as plain text and carries no file name. Only DOIs are queued: from the
+`doi` field, or a doi.org link in `url`/`note`/`howpublished`. An entry with
+neither comes back in `bibtex.noDOI` with its key and title, and the UI lists
+them. The 22 real exports this was measured on (292 entries, 290 DOIs; the two
+without are NVIDIA technical reports) disagree on field case, brace nesting,
+quoting and whether the DOI is a link, so the parser reads the format rather
+than matching lines.
+
 Listed rows carry `origin: "list"`. The UI shows a LIST chip, the DOI as it was
 written, and underneath it what the DOI is. `MetadataService` looks that up in
 the background, separately from downloading, and stores it as JSON in `meta`.
