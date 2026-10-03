@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { parseIdentifierList } from "../api/data/file";
+import { parseUploadedList } from "../api/data/file";
 import { extractMD5 } from "../api/data/md5";
 import { libgenLaneRefusals, resetLibgenLane } from "../api/data/libgen-file-pacing";
 import { CorpusService } from "./corpus-service";
@@ -408,14 +408,14 @@ const handleQueuePost = async (request: Request): Promise<Response> => {
  */
 const handleListPost = async (request: Request): Promise<Response> => {
   const contents = await request.text();
-  const { md5List, doiList, invalidLines } = parseIdentifierList(contents);
+  const { md5List, doiList, invalidLines, bibtex } = parseUploadedList(contents);
 
   const added = queue.addMany([
     ...md5List.map((md5) => ({ md5, source: "libgen", origin: "list" })),
     ...doiList.map((doi) => ({ doi, origin: "list" })),
   ]);
   metadata.wake();
-  return json({ added, md5Count: md5List.length, doiCount: doiList.length, invalidLines });
+  return json({ added, md5Count: md5List.length, doiCount: doiList.length, invalidLines, bibtex });
 };
 
 const buildFailureList = (): string => {

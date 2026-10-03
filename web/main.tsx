@@ -487,9 +487,24 @@ const App = () => {
       md5Count: number;
       doiCount: number;
       invalidLines: { lineNumber: number; content: string }[];
+      bibtex?: { entryCount: number; noDOI: { key: string; title: string }[] };
     };
 
     const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
+
+    const entries = (count: number) => `${count} ${count === 1 ? "entry" : "entries"}`;
+    // A BibTeX export: only its DOIs are queued, so say what was left out.
+    if (payload.bibtex) {
+      const { entryCount, noDOI } = payload.bibtex;
+      let bibNote = `Read ${entries(entryCount)} from the .bib file: queued ${plural(payload.doiCount, "DOI")} (looked up as each comes up)`;
+      if (noDOI.length > 0) {
+        const named = noDOI.slice(0, 5).map((entry) => entry.title || entry.key);
+        const more = noDOI.length > 5 ? `; and ${noDOI.length - 5} more` : "";
+        bibNote += `. ${entries(noDOI.length)} had no DOI: ${named.join("; ")}${more}`;
+      }
+      setUploadNote(bibNote);
+      return;
+    }
     const parts: string[] = [];
     if (payload.md5Count > 0) {
       parts.push(plural(payload.md5Count, "MD5"));
@@ -772,12 +787,12 @@ const App = () => {
                 }
               }}
             >
-              Drop a list of MD5s or DOIs here, or click to choose one
+              Drop a list of MD5s or DOIs, or a .bib file, here, or click to choose one
             </div>
             <input
               ref={fileInput}
               type="file"
-              accept=".txt,text/plain"
+              accept=".txt,.bib,text/plain,application/x-bibtex"
               style={{ display: "none" }}
               onChange={(event) => {
                 const file = event.target.files?.[0];

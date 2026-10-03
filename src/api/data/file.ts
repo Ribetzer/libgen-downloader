@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { type BibTeXNoDOI, looksLikeBibTeX, parseBibTeX } from "./bibtex";
 import { normalizeDOI } from "./edition";
 import { extractMD5 } from "./md5";
 
@@ -99,6 +100,30 @@ export function parseIdentifierList(contents: string): IdentifierListParseResult
   }
 
   return { ...parsed, doiList, invalidLines };
+}
+
+export interface UploadedListParseResult extends IdentifierListParseResult {
+  /** Set when the upload was a BibTeX export rather than a list. */
+  bibtex?: { entryCount: number; noDOI: BibTeXNoDOI[] };
+}
+
+/**
+ * What the upload drop zone accepts: a BibTeX export, read for its DOIs, or
+ * a list of MD5s and DOIs. Told apart by content, because the upload is sent
+ * as plain text and carries no file name.
+ */
+export function parseUploadedList(contents: string): UploadedListParseResult {
+  if (!looksLikeBibTeX(contents)) {
+    return parseIdentifierList(contents);
+  }
+  const { entryCount, doiList, noDOI } = parseBibTeX(contents);
+  return {
+    md5List: [],
+    doiList,
+    invalidLines: [],
+    preferredMirror: undefined,
+    bibtex: { entryCount, noDOI },
+  };
 }
 
 export interface ListFileOptions {
