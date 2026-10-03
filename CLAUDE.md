@@ -401,6 +401,31 @@ requests into Crossref's faster "polite" pool. `failed.txt`, which
 is an MD5 list, writes URL-only rows as comments rather than as lines that
 would be rejected on the way back in.
 
+### Where it runs (since 2026-10-02): the NAS
+
+`docker-compose.nas.yml` is stack `libgen-downloader` on the Synology
+(192.168.0.185, UI on :8095), deployed through Dockhand's API at :3000 (key:
+`DOCKHAND_NAS_API_KEY` in the RAG repo's `.env`). The PC's
+`docker-compose.local.yml` stack is stopped, not deleted, as the rollback.
+
+- **Never run both stacks.** They share the eight WireGuard keys, and Proton
+  allows ten connections, one of them the NAS's torrent VPN.
+- **The image is loaded, never built or pulled there:** `docker save` on the PC,
+  then `POST /api/images/load` with the raw tar. The J3455 has no AVX at all;
+  Bun 1.4.2 (`oven/bun:1-alpine`) was tested on it before the move and runs.
+- **Secrets are Dockhand stack variables** (`isSecret`), substituted into the
+  compose file; none are in the file.
+- **Downloads land in `/volume1/Papers/inbox`** and the RAG repo's
+  `scripts/sync_nas.ps1` _moves_ finished files to `D:\Papers\inbox` on the T9
+  (skipping `.part` and the marker), where filing picks them up.
+- **Shares in Windows ACL mode show as mode `000` inside a container.** The
+  Papers share is one: a marker and folder created over SMB were unreadable to
+  the app (uid 1026), so it paused all downloads. The inbox was given plain
+  Unix permissions (`1026:100`, `2775`) by a one-shot root container. The
+  `docker` share uses Unix permissions and needed nothing.
+- `LIBGEN_CORPUS_URL` is the NAS's RAG server (`:8765`); the old `.env` value
+  pointed at an address that no longer answered.
+
 ## Conventions
 
 - ESLint enforces `no-ternary` (hence the `if` blocks and inline IIFEs used to compute values) and `react/no-multi-comp` (one component per file). `unicorn/recommended` is on, so use `node:` protocol imports; `process.exit` needs an explicit disable comment.

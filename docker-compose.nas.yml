@@ -1,0 +1,219 @@
+# The NAS stack (Synology DS918+, stack `libgen-downloader` in Dockhand): the
+# same services as docker-compose.local.yml, so long download runs no longer
+# need the PC on. Read that file for why each piece exists; only what differs
+# is explained here.
+#
+# - The image is built on the PC and loaded through Dockhand
+#   (`POST /api/images/load`), never built or pulled here. Bun's default build
+#   needs AVX2 and the J3455 has no AVX at all, so this was tested first: Bun
+#   1.4.2 (oven/bun:1-alpine) runs sqlite, Bun.serve, fetch and hashing on it.
+# - Every ${VAR} comes from the stack's environment in Dockhand. The keys are
+#   stored there as secrets, never in this file.
+# - Downloads land in /volume1/Papers/inbox, which carries the .libgen-volume
+#   marker. The RAG repo's scripts/sync_nas.ps1 moves finished files from there
+#   to the T9 inbox, where filing on the PC picks them up as before.
+# - Runs as 1026:100, the Synology user that owns the shares, as the NAS's
+#   other containers do, so the sync can move what the app writes.
+# - The lanes' control-server keys are in
+#   /volume1/docker/libgen-downloader/gluetun-<lane>/auth/config.toml.
+# - Never run this alongside the PC's stack: both use the same eight WireGuard
+#   keys, and Proton allows ten connections, one of them the NAS's torrent VPN.
+x-lane: &lane
+  image: qmcgaw/gluetun:latest
+  cap_add:
+    - NET_ADMIN
+  devices:
+    - /dev/net/tun:/dev/net/tun
+  sysctls:
+    - net.ipv6.conf.all.disable_ipv6=1
+  restart: unless-stopped
+
+networks:
+  lanes:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+services:
+  gluetun:
+    image: qmcgaw/gluetun:latest
+    container_name: libgen-gluetun
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - VPN_SERVICE_PROVIDER=protonvpn
+      - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=${LIBGEN_WG_KEY_FI_1}
+      - SERVER_COUNTRIES=Finland
+      - TZ=Europe/London
+      # The NAS's LAN (the RAG server for LIBGEN_CORPUS_URL) and the lanes.
+      - FIREWALL_OUTBOUND_SUBNETS=192.168.0.0/24,172.30.0.0/24
+    volumes:
+      - /volume1/docker/libgen-downloader/gluetun:/gluetun
+    ports:
+      - 8095:8095
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=1
+    networks:
+      lanes:
+        ipv4_address: 172.30.0.2
+    restart: unless-stopped
+
+  gluetun-fi-2:
+    <<: *lane
+    container_name: libgen-gluetun-fi-2
+    environment:
+      - VPN_SERVICE_PROVIDER=protonvpn
+      - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=${LIBGEN_WG_KEY_FI_2}
+      - SERVER_COUNTRIES=Finland
+      - TZ=Europe/London
+      - HTTPPROXY=on
+      - HTTPPROXY_LISTENING_ADDRESS=:8888
+    volumes:
+      - /volume1/docker/libgen-downloader/gluetun-fi-2:/gluetun
+    networks:
+      lanes:
+        ipv4_address: 172.30.0.11
+
+  gluetun-dk-1:
+    <<: *lane
+    container_name: libgen-gluetun-dk-1
+    environment:
+      - VPN_SERVICE_PROVIDER=protonvpn
+      - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=${LIBGEN_WG_KEY_DK_1}
+      - SERVER_COUNTRIES=Denmark
+      - TZ=Europe/London
+      - HTTPPROXY=on
+      - HTTPPROXY_LISTENING_ADDRESS=:8888
+    volumes:
+      - /volume1/docker/libgen-downloader/gluetun-dk-1:/gluetun
+    networks:
+      lanes:
+        ipv4_address: 172.30.0.12
+
+  gluetun-dk-2:
+    <<: *lane
+    container_name: libgen-gluetun-dk-2
+    environment:
+      - VPN_SERVICE_PROVIDER=protonvpn
+      - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=${LIBGEN_WG_KEY_DK_2}
+      - SERVER_COUNTRIES=Denmark
+      - TZ=Europe/London
+      - HTTPPROXY=on
+      - HTTPPROXY_LISTENING_ADDRESS=:8888
+    volumes:
+      - /volume1/docker/libgen-downloader/gluetun-dk-2:/gluetun
+    networks:
+      lanes:
+        ipv4_address: 172.30.0.14
+
+  gluetun-nl-1:
+    <<: *lane
+    container_name: libgen-gluetun-nl-1
+    environment:
+      - VPN_SERVICE_PROVIDER=protonvpn
+      - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=${LIBGEN_WG_KEY_NL_1}
+      - SERVER_COUNTRIES=Netherlands
+      - TZ=Europe/London
+      - HTTPPROXY=on
+      - HTTPPROXY_LISTENING_ADDRESS=:8888
+    volumes:
+      - /volume1/docker/libgen-downloader/gluetun-nl-1:/gluetun
+    networks:
+      lanes:
+        ipv4_address: 172.30.0.15
+
+  gluetun-nl-2:
+    <<: *lane
+    container_name: libgen-gluetun-nl-2
+    environment:
+      - VPN_SERVICE_PROVIDER=protonvpn
+      - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=${LIBGEN_WG_KEY_NL_2}
+      - SERVER_COUNTRIES=Netherlands
+      - TZ=Europe/London
+      - HTTPPROXY=on
+      - HTTPPROXY_LISTENING_ADDRESS=:8888
+    volumes:
+      - /volume1/docker/libgen-downloader/gluetun-nl-2:/gluetun
+    networks:
+      lanes:
+        ipv4_address: 172.30.0.16
+
+  gluetun-ch-1:
+    <<: *lane
+    container_name: libgen-gluetun-ch-1
+    environment:
+      - VPN_SERVICE_PROVIDER=protonvpn
+      - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=${LIBGEN_WG_KEY_CH_1}
+      - SERVER_COUNTRIES=Switzerland
+      - TZ=Europe/London
+      - HTTPPROXY=on
+      - HTTPPROXY_LISTENING_ADDRESS=:8888
+    volumes:
+      - /volume1/docker/libgen-downloader/gluetun-ch-1:/gluetun
+    networks:
+      lanes:
+        ipv4_address: 172.30.0.17
+
+  gluetun-is-1:
+    <<: *lane
+    container_name: libgen-gluetun-is-1
+    environment:
+      - VPN_SERVICE_PROVIDER=protonvpn
+      - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=${LIBGEN_WG_KEY_IS_1}
+      - SERVER_COUNTRIES=Iceland
+      - TZ=Europe/London
+      - HTTPPROXY=on
+      - HTTPPROXY_LISTENING_ADDRESS=:8888
+    volumes:
+      - /volume1/docker/libgen-downloader/gluetun-is-1:/gluetun
+    networks:
+      lanes:
+        ipv4_address: 172.30.0.18
+
+  wiley-proxy:
+    image: ubuntu/squid:latest
+    container_name: libgen-wiley-proxy
+    volumes:
+      - /volume1/docker/libgen-downloader/wiley-proxy/squid.conf:/etc/squid/squid.conf:ro
+    networks:
+      lanes:
+        ipv4_address: 172.30.0.30
+    restart: unless-stopped
+
+  libgen-downloader:
+    image: libgen-downloader:latest
+    pull_policy: never
+    container_name: libgen-downloader
+    network_mode: service:gluetun
+    depends_on:
+      - gluetun
+    environment:
+      - PUID=1026
+      - PGID=100
+      - TZ=Europe/London
+      - LIBGEN_PORT=8095
+      - LIBGEN_VOLUME_MARKER=.libgen-volume
+      - LIBGEN_CORPUS_URL=http://192.168.0.185:8765
+      - LIBGEN_OPEN_ACCESS_EMAIL=${LIBGEN_OPEN_ACCESS_EMAIL:-}
+      - ANNAS_ARCHIVE_KEY=${ANNAS_ARCHIVE_KEY:-}
+      - LIBGEN_ANNAS_DOMAIN=${LIBGEN_ANNAS_DOMAIN:-annas-archive.gl}
+      - WILEY_TDM_TOKEN=${WILEY_TDM_TOKEN:-}
+      - LIBGEN_WILEY_PROXY=http://172.30.0.30:3128
+      - LIBGEN_LIBRARY_PROXY=${LIBGEN_LIBRARY_PROXY:-}
+      - LIBGEN_LANE_NAME=FI-1
+      - LIBGEN_PROXIES=FI-2=http://172.30.0.11:8888,DK-1=http://172.30.0.12:8888,DK-2=http://172.30.0.14:8888,NL-1=http://172.30.0.15:8888,NL-2=http://172.30.0.16:8888,CH-1=http://172.30.0.17:8888,IS-1=http://172.30.0.18:8888
+      - LIBGEN_GLUETUN_API_KEY=${LIBGEN_GLUETUN_API_KEY:-}
+    volumes:
+      - /volume1/docker/libgen-downloader/config:/config
+      - /volume1/Papers/inbox:/downloads
+    restart: unless-stopped
