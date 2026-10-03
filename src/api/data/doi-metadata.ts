@@ -12,6 +12,8 @@
  * exit exhausts long before midnight.
  */
 
+import { cleanText } from "./text";
+
 export interface DOIMetadata {
   /** `missing` means every source answered and none had the DOI. */
   status: "found" | "missing";
@@ -32,13 +34,7 @@ const CSL_MEDIA_TYPE = "application/vnd.citationstyles.csl+json";
  * so whitespace that breaks a line beside a tag is layout, not a space in the
  * title, and collapsing it to one space read as "C onsistent Z oom O ut".
  */
-export const stripMarkup = (value: string): string =>
-  value
-    .replaceAll(/\s*\n\s*(<[^>]+>)/g, "$1")
-    .replaceAll(/(<[^>]+>)\s*\n\s*/g, "$1")
-    .replaceAll(/<[^>]+>/g, "")
-    .replaceAll(/\s+/g, " ")
-    .trim();
+export const stripMarkup = (value: string): string => cleanText(value);
 
 /** Crossref gives lists where CSL from DataCite often gives plain strings. */
 const firstText = (value: unknown): string => {
@@ -69,7 +65,7 @@ const authorNames = (value: unknown): string[] => {
     .map((author) => {
       const parts = [author.given, author.family].filter(Boolean).join(" ").trim();
       // Consortium authors carry `name` (Crossref) or `literal` (CSL) instead.
-      return parts || (author.name || author.literal || "").trim();
+      return cleanText(parts || author.name || author.literal || "");
     })
     .filter(Boolean);
 };

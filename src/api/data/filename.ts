@@ -1,3 +1,5 @@
+import { cleanText } from "./text";
+
 const UTF8_LEAD_BYTE_START = 0xc2;
 const UTF8_LEAD_BYTE_END = 0xf4;
 const UTF8_CONTINUATION_START = 0x80;
@@ -148,7 +150,8 @@ export const buildDownloadFileName = (
   preferredTitle = "",
   preferredDOI = ""
 ): string => {
-  const repaired = repairEncoding(rawName);
+  // "T&amp;I engine (2011) [...].pdf" was saved under that name before this.
+  const repaired = cleanText(repairEncoding(rawName));
   const { stem, extension } = splitExtension(repaired);
   const metadata = readMetadata(stem, preferredDOI);
   const { suffix } = metadata;
