@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import type { DOIMetadata } from "../api/data/doi-metadata";
+import { cleanText } from "../api/data/text";
 
 export type ItemStatus =
   | "queued"
@@ -101,7 +102,19 @@ const parseMeta = (value: string | null): DOIMetadata | undefined => {
   }
 
   try {
-    return JSON.parse(value) as DOIMetadata;
+    // Rows looked up before cleanText existed keep their entities and
+    // markup in the stored JSON; clean them as they are read.
+    const meta = JSON.parse(value) as DOIMetadata;
+    if (meta.title) {
+      meta.title = cleanText(meta.title);
+    }
+    if (meta.venue) {
+      meta.venue = cleanText(meta.venue);
+    }
+    if (meta.authors) {
+      meta.authors = meta.authors.map((name) => cleanText(name));
+    }
+    return meta;
   } catch {
     return undefined;
   }
@@ -110,7 +123,9 @@ const parseMeta = (value: string | null): DOIMetadata | undefined => {
 const toQueueItem = (row: ItemRow): QueueItem => ({
   id: row.id,
   md5: row.md5,
-  title: row.title || "",
+  // Cleaned on read too, so rows stored before cleanText existed display
+  // (and name their downloads) without "&amp;" or markup.
+  title: cleanText(row.title || ""),
   // Rows written before there was more than one library are LibGen's.
   source: row.source || "libgen",
   url: row.url || "",
@@ -215,7 +230,7 @@ export class ItemStore {
       )
       .get(
         entry.md5 || "",
-        entry.title || "",
+        cleanText(entry.title || ""),
         entry.source || "libgen",
         entry.url || "",
         entry.doi || "",
@@ -353,7 +368,11 @@ export class ItemStore {
       }
 
       assignments.push(`${column} = ?`);
-      values.push(value);
+      if (key === "title" && typeof value === "string") {
+        values.push(cleanText(value));
+      } else {
+        values.push(value);
+      }
     }
 
     if (assignments.length === 0) {

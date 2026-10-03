@@ -1,4 +1,5 @@
 import { parseQuery } from "../api/data/query";
+import { cleanText } from "../api/data/text";
 import { searchSources, type Source, type SourceNote, type SourceResult } from "../api/sources";
 import { arxivSource } from "../api/sources/arxiv";
 import { libgenSource } from "../api/sources/libgen";
@@ -99,5 +100,13 @@ export const runSearch = async (
     return { status: "error", message: notes.map((note) => note.message).join("; ") };
   }
 
-  return { status: "ok", kind: parsedQuery.kind, items: withIdentity(items), notes };
+  // LibGen's catalogue repeats Crossref's markup and entities ("T&amp;I engine").
+  const cleaned = items.map((item) => ({
+    ...item,
+    title: cleanText(item.title),
+    articleTitle: cleanText(item.articleTitle),
+    authors: cleanText(item.authors),
+    publisher: cleanText(item.publisher),
+  }));
+  return { status: "ok", kind: parsedQuery.kind, items: withIdentity(cleaned), notes };
 };
