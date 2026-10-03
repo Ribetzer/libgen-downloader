@@ -425,9 +425,10 @@ would be rejected on the way back in.
   Bun 1.4.2 (`oven/bun:1-alpine`) was tested on it before the move and runs.
 - **Secrets are Dockhand stack variables** (`isSecret`), substituted into the
   compose file; none are in the file.
-- **Downloads land in `/volume1/Papers/inbox`** and the RAG repo's
-  `scripts/sync_nas.ps1` _moves_ finished files to `D:\Papers\inbox` on the T9
-  (skipping `.part` and the marker), where filing picks them up.
+- **Downloads land in `/volume1/Papers/inbox`**, and since 2026-10-03 the RAG
+  repo's NAS pipeline files them from there: it identifies each one and moves
+  it into the library. It ignores `.part` files and the marker, since it reads
+  only document suffixes. Nothing moves them to the T9 any more.
 - **Shares in Windows ACL mode show as mode `000` inside a container.** The
   Papers share is one: a marker and folder created over SMB were unreadable to
   the app (uid 1026), so it paused all downloads. The inbox was given plain
