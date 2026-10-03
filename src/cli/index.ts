@@ -1,7 +1,7 @@
 import meow from "meow";
 
 export const cli = meow(
-  `
+  String.raw`
 	Usage
 	  $ libgen-downloader <input>
 
@@ -23,7 +23,7 @@ export const cli = meow(
     $ libgen-downloader -b ./MD5_LIST_1695686580524.txt
     $ libgen-downloader -u 1234567890abcdef1234567890abcdef
     $ libgen-downloader -d 1234567890abcdef1234567890abcdef
-    $ libgen-downloader --set-output C:\\Papers
+    $ libgen-downloader --set-output C:\Papers
     $ libgen-downloader -o ./downloads -b ./MD5_LIST.txt
     $ libgen-downloader --doi 10.1080/2165347X.2013.870057
     $ libgen-downloader --issue 13647 --volume 17
