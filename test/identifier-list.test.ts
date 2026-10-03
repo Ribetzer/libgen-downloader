@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { parseIdentifierList } from "../src/api/data/file";
+import { parseIdentifierList, parseUploadedList } from "../src/api/data/file";
 
 const MD5 = "b7abef3d085a1007a137a247dcff8dcb";
 
@@ -52,5 +52,24 @@ describe("parseIdentifierList", () => {
       { lineNumber: 1, content: "clean code" },
       { lineNumber: 2, content: "10.1080" },
     ]);
+  });
+});
+
+describe("parseUploadedList", () => {
+  it("reads a BibTeX export for its DOIs and says what it left out", () => {
+    const bib =
+      "@article{a, title = {Has one}, doi = {10.1145/1073204.1073206}}\n@techreport{b, title = {Has none}}\n";
+    const result = parseUploadedList(bib);
+    expect(result.doiList).toEqual(["10.1145/1073204.1073206"]);
+    expect(result.md5List).toEqual([]);
+    expect(result.invalidLines).toEqual([]);
+    expect(result.bibtex).toEqual({ entryCount: 2, noDOI: [{ key: "b", title: "Has none" }] });
+  });
+
+  it("reads any other upload as an MD5 and DOI list, exactly as before", () => {
+    const result = parseUploadedList(`${MD5}\n10.1145/1073204.1073206\n`);
+    expect(result.md5List).toEqual([MD5]);
+    expect(result.doiList).toEqual(["10.1145/1073204.1073206"]);
+    expect(result.bibtex).toBeUndefined();
   });
 });
