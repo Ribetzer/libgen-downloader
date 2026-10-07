@@ -167,7 +167,9 @@ pans and zooms.)_
   the server actually grants one. A mirror answering `429` or `503` is backed
   off from rather than hammered.
 - Readable filenames: `Title (Year) [DOI].pdf`, with the encoding repaired and
-  characters Windows rejects replaced.
+  characters Windows rejects replaced. A book with no DOI is named by its
+  ISBN-13 instead, `Title (Year) [9780262033848].pdf`, read off the download
+  page LibGen already serves.
 - A file already present at its full size is left alone, so re-running a list
   only fetches what is still missing.
 - Configurable download folder, for one run or remembered between runs.
@@ -212,6 +214,10 @@ every file in it through the normal bulk download.
 In the interactive search box the same inputs work: paste a DOI, or type
 `issuesid:13647 issuevolume:17`, and the results list fills with that record's
 files, ready to download or add to the bulk queue.
+
+An ISBN can be pasted as printed - `978-3-642-12020-6`, `ISBN 0 262 03384 4`.
+LibGen stores ISBNs as bare digits, and a dashed one finds nothing, so it is
+searched as `9783642120206` (after its checksum is verified).
 
 ## Searching more than one library
 
