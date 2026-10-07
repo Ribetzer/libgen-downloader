@@ -30,6 +30,8 @@ export abstract class Adapter {
     document: Document,
     throwError?: (message: string) => void
   ): string | undefined;
+  /** The ISBNs the detail page lists, as ISBN-13s - empty for a paper. */
+  abstract getISBNsFromDocument(document: Document): string[];
   abstract formatField(fieldName: string, value: string): string;
   abstract detectConnectionError(document: Document): string | undefined;
 }

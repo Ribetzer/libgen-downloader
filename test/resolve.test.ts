@@ -21,6 +21,22 @@ afterEach(() => {
 });
 
 describe("resolveDownloadURL", () => {
+  it("returns the book's ISBN from the page it already fetched", async () => {
+    const { readFileSync } = await import("node:fs");
+    const page = readFileSync(`${import.meta.dir}/fixtures/ads-download-page.html`, "utf8");
+    mockFetch(async () => new Response(page));
+
+    const result = await resolveDownloadURL({
+      md5: MD5,
+      candidates: [createCandidate("libgen.example")],
+    });
+
+    expect(result.status).toBe("resolved");
+    if (result.status === "resolved") {
+      expect(result.isbn).toBe("9780262033848");
+    }
+  });
+
   it("falls through to a mirror that holds the record", async () => {
     const { requestedURLs } = mockFetch(async (input) => {
       if (input.toString().startsWith("https://second.example/")) {

@@ -57,7 +57,7 @@ No mirror is hardcoded. `fetchConfig()` (`src/api/data/config.ts`) fetches `CONF
 
 Plain text queries go through the HTML file search (`index.php` → `#tablelibgen` → `parseEntries`). DOIs and issues cannot be found that way, so they go through the mirror's JSON API instead:
 
-- `parseQuery` (`src/api/data/query.ts`) classifies the input as `doi`, `issue` or `text`; the search box and `handleSearchSubmit` both route on it.
+- `parseQuery` (`src/api/data/query.ts`) classifies the input as `doi`, `issue` or `text`; the search box and `handleSearchSubmit` both route on it. An ISBN (`978-3-642-12020-6`, `ISBN 0 262 03384 4`) is searched as bare digits (`normalizeISBN`, checksum verified): LibGen stores ISBNs without dashes, so the dashed form finds nothing.
 - `json.php?object=e&doi=…` returns the edition _with_ its `files` subarray, so a DOI is one request. `--issue` scrapes only edition ids out of the editions tab (`curtab=e`, which carries no MD5s) and then batches them into `json.php?object=e&ids=…`.
 - Responses are keyed by id at both levels and answer `[]` or `{"error": …}` for a miss, which is why `parseEditionsJSON` is deliberately tolerant. Real captured responses live in `test/fixtures/` — regenerate them from a machine that can reach libgen rather than hand-editing.
 - `buildEntriesFromEditions` converts records into the same `Entry` shape the HTML search produces, so lookups reuse the result list, detail view and both download queues unchanged.
@@ -148,7 +148,7 @@ Four invariants worth preserving:
   `Readable.fromWeb`, not `Readable.from` — `from` only iterates a web stream,
   so destroying it leaks the reader and the socket.
 - **Progress is absolute, not incremental.** `onProgress(filename, receivedBytes, total)` reports the byte count for the _current_ attempt and the stores assign it. Reintroducing deltas brings back >100% readings whenever a transfer restarts or moves mirror.
-- **Names come from `src/api/data/filename.ts`.** `buildDownloadFileName` repairs the ISO-8859-1/UTF-8 mojibake, rebuilds `Title (Year) [DOI].ext`, sanitizes for Windows, and trims the _title_ so the extension always survives. The output directory (config slice, `outputDirectory`) is resolved once at startup and threaded through `downloadByMD5`; nothing should write to `./` directly.
+- **Names come from `src/api/data/filename.ts`.** `buildDownloadFileName` repairs the ISO-8859-1/UTF-8 mojibake, rebuilds `Title (Year) [DOI].ext` - or, for a book with no DOI, `Title (Year) [9780262033848].ext`, the ISBN-13 read off the `ads.php` page the resolve step already fetched (`getISBNsFromDocument`), in the bare-digit label the RAG decodes - sanitizes for Windows, and trims the _title_ so the extension always survives. The output directory (config slice, `outputDirectory`) is resolved once at startup and threaded through `downloadByMD5`; nothing should write to `./` directly.
 
 ### Failure handling
 

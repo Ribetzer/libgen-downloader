@@ -57,6 +57,8 @@ interface downloadFileArguments {
   preferredTitle?: string;
   /** The caller's own DOI, used when libgen's filename carries none. */
   preferredDOI?: string;
+  /** A book's ISBN-13, named in the file when there is no DOI. */
+  preferredISBN?: string;
   /** Overrides the stall watchdog, so a test need not wait a real minute. */
   stallTimeoutMs?: number;
   /**
@@ -186,6 +188,7 @@ export const downloadFile = async ({
   fallbackFileName,
   preferredTitle,
   preferredDOI,
+  preferredISBN,
   stallTimeoutMs = DOWNLOAD_STALL_TIMEOUT_MS,
   resumeFromBytes = 0,
   onPartPath,
@@ -210,7 +213,13 @@ export const downloadFile = async ({
     MIN_FILE_NAME_LENGTH,
     Math.min(MAX_FILE_NAME_LENGTH, MAX_PATH_LENGTH - outputDirectory.length)
   );
-  const filename = buildDownloadFileName(declaredName, nameBudget, preferredTitle, preferredDOI);
+  const filename = buildDownloadFileName(
+    declaredName,
+    nameBudget,
+    preferredTitle,
+    preferredDOI,
+    preferredISBN
+  );
 
   // A resumed response describes only the slice it is sending, so the size of
   // the whole file has to come from `content-range` instead of
@@ -358,6 +367,7 @@ interface TransferArguments {
   fallbackFileName?: string;
   preferredTitle?: string;
   preferredDOI?: string;
+  preferredISBN?: string;
   /** Extra request headers, for a source whose host wants one. */
   headers?: Record<string, string>;
   /**
@@ -490,6 +500,7 @@ const transferFile = async ({
   fallbackFileName,
   preferredTitle,
   preferredDOI,
+  preferredISBN,
   headers: extraHeaders,
   requestInit,
   libgenLane,
@@ -650,6 +661,7 @@ const transferFile = async ({
         fallbackFileName,
         preferredTitle,
         preferredDOI,
+        preferredISBN,
         resumeFromBytes,
         onPartPath: (resolvedPartPath) => {
           partPath = resolvedPartPath;
@@ -976,6 +988,8 @@ export const downloadByMD5 = async ({
       outputDirectory,
       preferredTitle,
       preferredDOI,
+      // Read off the detail page the resolve step already fetched.
+      preferredISBN: resolveResult.isbn,
       throttleBackoffMs,
       backoffMs: effectiveBackoffMs,
       deadline,

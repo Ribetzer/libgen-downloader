@@ -1,4 +1,5 @@
 import { normalizeDOI } from "./edition";
+import { normalizeISBN } from "./isbn";
 
 export type ParsedQuery =
   | { kind: "doi"; doi: string }
@@ -19,6 +20,12 @@ export const parseQuery = (raw: string): ParsedQuery => {
   const doi = normalizeDOI(trimmed);
   if (doi) {
     return { kind: "doi", doi };
+  }
+
+  // LibGen stores ISBNs as bare digits; a dashed one finds nothing.
+  const isbn = normalizeISBN(trimmed);
+  if (isbn) {
+    return { kind: "text", query: isbn };
   }
 
   const issuesId = trimmed.match(ISSUES_ID_PATTERN)?.[1];
