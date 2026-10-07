@@ -65,7 +65,7 @@ const splitExtension = (value: string) => {
  * title, the year and the DOI leaves a name that reads well and still traces
  * back to the record.
  */
-const readMetadata = (stem: string, fallbackDOI = "") => {
+const readMetadata = (stem: string, fallbackDOI = "", fallbackISBN = "") => {
   const withoutMirror = stem.replace(MIRROR_SUFFIX_PATTERN, "");
 
   const year = withoutMirror.match(YEAR_PATTERN)?.[1];
@@ -102,6 +102,10 @@ const readMetadata = (stem: string, fallbackDOI = "") => {
   }
   if (doi) {
     suffix += ` [${doi}]`;
+  } else if (fallbackISBN.trim()) {
+    // A book with no DOI: its ISBN, as the bare-digit label the RAG reads
+    // (`[9780262033848]`), so it is identified without a title search.
+    suffix += ` [${fallbackISBN.trim()}]`;
   }
 
   return { title, suffix };
@@ -148,12 +152,13 @@ export const buildDownloadFileName = (
   rawName: string,
   maxLength: number = MAX_FILE_NAME_LENGTH,
   preferredTitle = "",
-  preferredDOI = ""
+  preferredDOI = "",
+  preferredISBN = ""
 ): string => {
   // "T&amp;I engine (2011) [...].pdf" was saved under that name before this.
   const repaired = cleanText(repairEncoding(rawName));
   const { stem, extension } = splitExtension(repaired);
-  const metadata = readMetadata(stem, preferredDOI);
+  const metadata = readMetadata(stem, preferredDOI, preferredISBN);
   const { suffix } = metadata;
 
   // A caller that knows the real title beats anything derivable from the name.

@@ -10,7 +10,8 @@ export interface MirrorCandidate {
 }
 
 export type ResolveResult =
-  | { status: "resolved"; downloadURL: string; candidate: MirrorCandidate }
+  // `isbn` is the first ISBN-13 the detail page lists, for naming a book.
+  | { status: "resolved"; downloadURL: string; candidate: MirrorCandidate; isbn?: string }
   // Every mirror answered, none of them holds a record for this MD5.
   | { status: "not_found"; checkedMirrors: string[] }
   // No mirror could be reached at all, so the record may well exist.
@@ -83,7 +84,8 @@ export async function resolveDownloadURL({
 
     const downloadURL = candidate.adapter.getMainDownloadURLFromDocument(detailPageResult.document);
     if (downloadURL) {
-      return { status: "resolved", downloadURL, candidate };
+      const isbn = candidate.adapter.getISBNsFromDocument(detailPageResult.document)[0];
+      return { status: "resolved", downloadURL, candidate, isbn };
     }
   }
 

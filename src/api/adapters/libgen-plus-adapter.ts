@@ -2,6 +2,7 @@ import { Entry } from "../models/entry";
 import { Adapter, IssueQuery } from "./adapter";
 import { nanoid } from "nanoid";
 import { clearText } from "../../utilities";
+import { isbn13, normalizeISBN } from "../data/isbn";
 
 const EDITION_LINK_PATTERN = /edition\.php\?id=(\d+)/g;
 
@@ -167,6 +168,25 @@ export class LibgenPlusAdapter implements Adapter {
 
     const href = downloadLinkElement.getAttribute("href");
     return this.getPageURL(href || "");
+  }
+
+  /**
+   * `ads.php` lists a book's ISBNs as "ISBN: 9780262033848; 0262033844" -
+   * often the ISBN-13 and ISBN-10 of one book - so they are normalised to
+   * ISBN-13 and deduplicated. Read from the page the download already
+   * fetches, so it costs no request.
+   */
+  getISBNsFromDocument(document: Document): string[] {
+    const text = document.body?.textContent || "";
+    const listed = text.match(/ISBN:\s*([\dXx;,\s-]+)/)?.[1] || "";
+    const found: string[] = [];
+    for (const piece of listed.split(/[;,]/)) {
+      const digits = normalizeISBN(piece);
+      if (digits && !found.includes(isbn13(digits))) {
+        found.push(isbn13(digits));
+      }
+    }
+    return found;
   }
 
   detectConnectionError(document: Document): string | undefined {
