@@ -329,6 +329,33 @@ was rate limited. Without them a partial result looks like a complete one.
 
 ---
 
+## The settings page (2026-10-08)
+
+Before this, every limit was an environment variable. Changing concurrency or
+turning rotation off meant editing the Dockhand stack and redeploying eight
+VPN containers.
+
+- **Concurrency changes without a restart.** Raising it starts workers at
+  once. Lowering it doesn't cancel anything: the extra workers finish their
+  current item and then retire. Measured in `queue-controls.test.ts`: from 3
+  to 1, two items finished, no new one started, and only one was ever in
+  flight afterwards.
+- **The main lane needed its own control-server role.** Its gluetun had no
+  `auth/config.toml`, so its control server refused `PUT /v1/vpn/status`, and
+  only the seven proxied lanes could be rotated. The lanes' role file was
+  copied to `/volume1/docker/libgen-downloader/gluetun/auth/` on the NAS. On
+  2026-10-08, FI-1 and IS-1 were both reconnected by hand. Both came back on
+  new exit IPs within a minute: FI-1 moved from 194.34.132.57 to
+  130.195.221.163, and IS-1 from .115 to .65.
+- **Country comes free with the probe.** Cloudflare's `/cdn-cgi/trace` already
+  answers `loc=`, so the exit country costs no extra request. All eight lanes
+  reported the country their `SERVER_COUNTRIES` asks for.
+- **The counts are in memory.** The per-lane done/failed/bytes counts reset on
+  restart, because `items` has no lane column. The hour and day totals come
+  from the database (`ItemStore.stats`), so they survive restarts.
+
+---
+
 ## Dead ends
 
 **Do not `--fix` the lint.** ESLint enforces `linebreak-style: LF` and the
