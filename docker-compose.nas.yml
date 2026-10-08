@@ -10,12 +10,14 @@
 # - Every ${VAR} comes from the stack's environment in Dockhand. The keys are
 #   stored there as secrets, never in this file.
 # - Downloads land in /volume1/Papers/inbox, which carries the .libgen-volume
-#   marker. The RAG repo's scripts/sync_nas.ps1 moves finished files from there
-#   to the T9 inbox, where filing on the PC picks them up as before.
+#   marker. The RAG stack's pipeline takes them in from there every ten
+#   minutes, as it does anything copied or uploaded into that folder.
 # - Runs as 1026:100, the Synology user that owns the shares, as the NAS's
 #   other containers do, so the sync can move what the app writes.
 # - The lanes' control-server keys are in
-#   /volume1/docker/libgen-downloader/gluetun-<lane>/auth/config.toml.
+#   /volume1/docker/libgen-downloader/gluetun-<lane>/auth/config.toml, and the
+#   main gluetun's in gluetun/auth/config.toml (since 2026-10-08), so the
+#   settings page can reconnect the main lane too.
 # - Never run this alongside the PC's stack: both use the same eight WireGuard
 #   keys, and Proton allows ten connections, one of them the NAS's torrent VPN.
 x-lane: &lane

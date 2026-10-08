@@ -451,3 +451,88 @@ header .lane {
 .chip-source.openaccess {
   color: var(--green);
 }
+
+/* The settings page: lanes, queue controls and activity. */
+header > button.small {
+  margin-left: auto;
+}
+.settings-panel h3 {
+  margin: 18px 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.settings-panel h3:first-of-type {
+  margin-top: 4px;
+}
+.settings-grid {
+  display: grid;
+  gap: 10px;
+  font-size: 13px;
+}
+.settings-grid input[type="number"] {
+  width: 70px;
+  background: var(--panel-raised);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+.table-scroll {
+  overflow-x: auto;
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.lanes-table th,
+.lanes-table td {
+  padding: 7px 10px;
+  vertical-align: middle;
+}
+.lanes-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.lanes-table .nowrap {
+  white-space: nowrap;
+}
+.stats-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+.stat-block {
+  background: var(--panel-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+.stat-block h3 {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-weight: 500;
+}
+.stat-big {
+  font-size: 26px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.routes {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  font-size: 12.5px;
+}
+.routes li {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 0;
+  border-top: 1px solid var(--border);
+}
+.routes li span:last-child {
+  font-variant-numeric: tabular-nums;
+}

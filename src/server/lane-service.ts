@@ -25,6 +25,19 @@ export interface LaneServiceOptions {
   refusals?: (laneKey: string, withinMs: number) => number;
   /** A lane has been rotated: whatever was known about its old IP is stale. */
   onRotated?: (lane: DownloadLane) => void;
+  /**
+   * Whether `rotate` can reach the main lane's own gluetun - the one the app
+   * shares a network with. Its control server needs the same API key as the
+   * lanes', in its own auth/config.toml. Unset: only proxied lanes reconnect.
+   */
+  mainControllable?: boolean;
+}
+
+export interface LaneRotation {
+  at: string;
+  reason: string;
+  ok: boolean;
+  error?: string;
 }
 
 export interface LaneState {
@@ -34,7 +47,17 @@ export interface LaneState {
   ready: boolean;
   /** The address LibGen sees for this lane, once a probe has answered. */
   ip: string;
+  /** Its exit's country, as Cloudflare places the IP (`loc=`). */
+  country: string;
   checkedAt: string;
+  /** When it stopped answering; "" while it answers. */
+  downSince: string;
+  /** Out of rotation after LibGen stopped answering through it, until then. */
+  benchedUntil: string;
+  /** Its VPN is being reconnected right now. */
+  rotating: boolean;
+  /** The last time it was moved to another server, and why. */
+  lastRotation?: LaneRotation;
 }
 
 /**
@@ -71,6 +94,8 @@ export class LaneService {
   private downSince = new Map<string, number>();
   private rotatedAt = new Map<string, number>();
   private rotating = new Set<string>();
+  private lastRotation = new Map<string, LaneRotation>();
+  private autoRotate = true;
 
   constructor(
     readonly lanes: DownloadLane[],
@@ -84,7 +109,11 @@ export class LaneService {
         // has not answered yet.
         ready: !lane.proxy,
         ip: "",
+        country: "",
         checkedAt: "",
+        downSince: "",
+        benchedUntil: "",
+        rotating: false,
       });
     }
   }
@@ -106,10 +135,76 @@ export class LaneService {
   };
 
   getStates(): LaneState[] {
-    return this.lanes.map((lane) => ({
-      ...(this.states.get(lane.key) as LaneState),
-      ready: this.isReady(lane),
-    }));
+    const now = Date.now();
+    return this.lanes.map((lane) => {
+      const downSince = this.downSince.get(lane.key);
+      const benchedUntil = this.benchedUntil.get(lane.key) ?? 0;
+      let downSinceText = "";
+      if (downSince !== undefined) {
+        downSinceText = new Date(downSince).toISOString();
+      }
+      let benchedText = "";
+      if (benchedUntil > now) {
+        benchedText = new Date(benchedUntil).toISOString();
+      }
+      return {
+        ...(this.states.get(lane.key) as LaneState),
+        ready: this.isReady(lane),
+        downSince: downSinceText,
+        benchedUntil: benchedText,
+        rotating: this.rotating.has(lane.key),
+        lastRotation: this.lastRotation.get(lane.key),
+      };
+    });
+  }
+
+  /** Whether automatic rotation (`rotateWhereNeeded`) is on. */
+  getAutoRotate(): boolean {
+    return this.autoRotate;
+  }
+
+  setAutoRotate(on: boolean): void {
+    this.autoRotate = on;
+  }
+
+  /** Whether this lane's VPN can be reconnected from here. */
+  canReconnect(lane: DownloadLane): boolean {
+    if (!this.options.rotate) {
+      return false;
+    }
+
+    return Boolean(lane.proxy) || Boolean(this.options.mainControllable);
+  }
+
+  /**
+   * Reconnect one lane now, at a person's request: not held back by the gap
+   * automatic rotation keeps, since whoever pressed it can see why.
+   */
+  async reconnect(key: string): Promise<{ ok: boolean; error?: string }> {
+    const lane = this.lanes.find((candidate) => candidate.key === key);
+    if (!lane) {
+      return { ok: false, error: `no lane ${key}` };
+    }
+    if (!this.canReconnect(lane)) {
+      return { ok: false, error: `${key} cannot be reconnected from here` };
+    }
+    if (this.rotating.has(key)) {
+      return { ok: false, error: `${key} is already reconnecting` };
+    }
+
+    await this.rotateLane(lane, "reconnected by hand");
+    const outcome = this.lastRotation.get(key);
+    if (outcome?.ok) {
+      return { ok: true };
+    }
+    return { ok: false, error: outcome?.error ?? "unknown error" };
+  }
+
+  /** Every lane that can be reconnected, at once. */
+  async reconnectAll(): Promise<Record<string, { ok: boolean; error?: string }>> {
+    const keys = this.lanes.filter((lane) => this.canReconnect(lane)).map((lane) => lane.key);
+    const results = await Promise.all(keys.map((key) => this.reconnect(key)));
+    return Object.fromEntries(keys.map((key, index) => [key, results[index]]));
   }
 
   /** Probes every lane at once. Resolves with whether any lane changed state. */
@@ -128,7 +223,7 @@ export class LaneService {
    */
   private async rotateWhereNeeded(): Promise<void> {
     const { rotate, refusals } = this.options;
-    if (!rotate) {
+    if (!rotate || !this.autoRotate) {
       return;
     }
 
@@ -177,11 +272,15 @@ export class LaneService {
     // Out of rotation until a probe sees it up on its new server.
     state.ready = false;
     console.log(`Lane ${lane.key}: ${reason} - moving it to another server`);
+    const at = new Date().toISOString();
     try {
       await rotate(lane);
       onRotated?.(lane);
+      this.lastRotation.set(lane.key, { at, reason, ok: true });
     } catch (error: unknown) {
-      console.log(`Lane ${lane.key}: could not reconnect (${(error as Error).message})`);
+      const message = (error as Error).message;
+      console.log(`Lane ${lane.key}: could not reconnect (${message})`);
+      this.lastRotation.set(lane.key, { at, reason, ok: false, error: message });
     } finally {
       this.rotating.delete(lane.key);
     }
@@ -190,13 +289,16 @@ export class LaneService {
   private async probeLane(lane: DownloadLane): Promise<boolean> {
     const state = this.states.get(lane.key) as LaneState;
     let ip = "";
+    let country = "";
     try {
       const response = await fetch(TRACE_URL, {
         proxy: lane.proxy,
         signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
       });
       if (response.ok) {
-        ip = /^ip=(.+)$/m.exec(await response.text())?.[1]?.trim() ?? "";
+        const trace = await response.text();
+        ip = /^ip=(.+)$/m.exec(trace)?.[1]?.trim() ?? "";
+        country = /^loc=(.+)$/m.exec(trace)?.[1]?.trim() ?? "";
       }
     } catch {
       // Unreachable proxy, or a tunnel that is not up yet.
@@ -216,6 +318,7 @@ export class LaneService {
     state.ready = ready;
     if (ip) {
       state.ip = ip;
+      state.country = country;
       this.downSince.delete(lane.key);
     } else if (!this.downSince.has(lane.key)) {
       this.downSince.set(lane.key, Date.now());

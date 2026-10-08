@@ -25,6 +25,20 @@ export interface NewQueueItem {
   origin?: string;
 }
 
+export interface ItemWindow {
+  downloaded: number;
+  failed: number;
+  bytes: number;
+  /** Downloads by the route that delivered them: a mirror, a source or Anna's. */
+  bySource: Record<string, number>;
+}
+
+export interface ItemStats {
+  byStatus: Record<string, number>;
+  lastHour: ItemWindow;
+  lastDay: ItemWindow;
+}
+
 export interface QueueItem {
   id: number;
   /**
@@ -331,6 +345,55 @@ export class ItemStore {
   }
 
   /** Whether anything is waiting at all, claimable or not. */
+  /**
+   * What the settings page shows: the table by status, and what finished in
+   * the last hour and day - downloads, failures, bytes, and which route
+   * (mirror, source or Anna's) delivered them.
+   */
+  stats(): ItemStats {
+    const byStatus: Record<string, number> = {};
+    for (const row of this.database
+      .query<
+        { status: string; count: number },
+        []
+      >("SELECT status, COUNT(*) AS count FROM items GROUP BY status")
+      .all()) {
+      byStatus[row.status] = row.count;
+    }
+
+    return { byStatus, lastHour: this.statsWindow(1), lastDay: this.statsWindow(24) };
+  }
+
+  private statsWindow(hours: number): ItemWindow {
+    const since = `-${hours} hours`;
+    const result: ItemWindow = { downloaded: 0, failed: 0, bytes: 0, bySource: {} };
+    for (const row of this.database
+      .query<{ status: string; count: number; bytes: number | null }, [string]>(
+        `SELECT status, COUNT(*) AS count, SUM(total) AS bytes FROM items
+          WHERE updated_at >= datetime('now', ?) AND status IN ('downloaded', 'failed')
+          GROUP BY status`
+      )
+      .all(since)) {
+      if (row.status === "downloaded") {
+        result.downloaded = row.count;
+        result.bytes = row.bytes ?? 0;
+      } else {
+        result.failed = row.count;
+      }
+    }
+    for (const row of this.database
+      .query<{ route: string; count: number }, [string]>(
+        `SELECT COALESCE(NULLIF(mirror, ''), NULLIF(source, ''), 'unknown') AS route, COUNT(*) AS count
+           FROM items
+          WHERE updated_at >= datetime('now', ?) AND status = 'downloaded'
+          GROUP BY route`
+      )
+      .all(since)) {
+      result.bySource[row.route] = row.count;
+    }
+    return result;
+  }
+
   hasQueued(): boolean {
     return Boolean(
       this.database

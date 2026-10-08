@@ -342,7 +342,19 @@ GET  /api/history          finished items
 POST /api/history/retry    {} retries every failure; {"id": N} retries one
 POST /api/history/dismiss  {"id": N} drops one failure from the set
 GET  /api/history/failed.txt   an MD5 list of the failures
+GET  /api/lanes            every VPN lane: exit IP and country, status, pacing, counts
+POST /api/lanes/reconnect  {"key": "DK-1"} reconnects one lane; {} reconnects all
+GET  /api/settings         {"concurrency", "autoRotate", "paused"}
+POST /api/settings         any of those; applied at once and kept across restarts
+GET  /api/stats            the queue by status, and what finished in the last hour and day
 ```
+
+The **Settings** button in the header opens the same things as a page: each
+lane's exit, whether LibGen is holding it back, what it has downloaded since
+the start, and a Reconnect button per lane and for all of them; pause and
+resume; how many downloads run at once; and automatic rotation on or off.
+`LIBGEN_CONCURRENCY` and `LIBGEN_GLUETUN_API_KEY` only give the defaults: a
+change made there is saved as `settings.json` in the config directory.
 
 `POST /api/queue` takes `{"md5": …}`, `{"doi": …}` or `{"url": …}`. The DOI
 form resolves through LibGen _and_ Sci-Hub for you, so a caller that knows only
