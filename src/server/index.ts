@@ -2,7 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { parseUploadedList } from "../api/data/file";
 import { extractMD5 } from "../api/data/md5";
-import { libgenLaneRefusals, resetLibgenLane } from "../api/data/libgen-file-pacing";
+import {
+  libgenLaneRefusals,
+  libgenLaneSnapshot,
+  resetLibgenLane,
+} from "../api/data/libgen-file-pacing";
 import { CorpusService } from "./corpus-service";
 import { gluetunControlURL, restartGluetunVPN } from "./gluetun-control";
 import { ItemStore, NewQueueItem, QueueItem } from "./database";
@@ -11,6 +15,7 @@ import { MetadataService } from "./metadata-service";
 import { MirrorService } from "./mirror-service";
 import { QueueService } from "./queue-service";
 import { findFilesForDOI, runSearch } from "./search-service";
+import { SettingsStore } from "./settings-store";
 import { StorageService } from "./storage-service";
 // Straight from package.json: importing ../index would run the CLI entry point.
 import packageJson from "../../package.json";
@@ -48,6 +53,15 @@ const MAIN_LANE_NAME = process.env.LIBGEN_LANE_NAME || "main";
 // container. Set, lanes that LibGen keeps refusing are moved to another server;
 // unset, lanes stay where they are.
 const GLUETUN_API_KEY = process.env.LIBGEN_GLUETUN_API_KEY || "";
+// The main lane's own gluetun, which the app shares a network with in the
+// stacks, so its control server is on localhost. It answers only with an
+// auth/config.toml giving the same key as the lanes'; without one, reconnecting
+// the main lane fails with gluetun's 401 and says so.
+let defaultMainControl = "";
+if (PROXY_LANES.length > 0) {
+  defaultMainControl = "http://127.0.0.1:8000";
+}
+const MAIN_CONTROL_URL = process.env.LIBGEN_MAIN_CONTROL_URL ?? defaultMainControl;
 const LANE_CHECK_MS = 60_000;
 // How many items download at once; see QUEUE_CONCURRENCY. With extra lanes,
 // two per lane unless set: one connection per exit IP leaves most of each
@@ -60,6 +74,7 @@ const CONCURRENCY = Number(process.env.LIBGEN_CONCURRENCY) || defaultConcurrency
 const MIRROR_REFRESH_MS = 60 * 60 * 1000;
 const MIRROR_RETRY_MS = 30 * 1000;
 const HISTORY_LIMIT = 500;
+const STARTED_AT = new Date().toISOString();
 
 const json = (body: unknown, status = 200) => Response.json(body, { status });
 
@@ -105,10 +120,14 @@ const notifyFinished = (item: QueueItem) => {
 };
 
 const rotateLane = async (lane: { proxy?: string }): Promise<void> => {
-  if (!lane.proxy) {
+  if (lane.proxy) {
+    await restartGluetunVPN(gluetunControlURL(lane.proxy), GLUETUN_API_KEY);
     return;
   }
-  await restartGluetunVPN(gluetunControlURL(lane.proxy), GLUETUN_API_KEY);
+  if (!MAIN_CONTROL_URL) {
+    throw new Error("the main lane's control server is not configured");
+  }
+  await restartGluetunVPN(MAIN_CONTROL_URL, GLUETUN_API_KEY);
 };
 
 let rotate: typeof rotateLane | undefined;
@@ -122,7 +141,17 @@ const lanes = new LaneService([{ key: MAIN_LANE_NAME }, ...PROXY_LANES], {
   // A new exit IP starts with LibGen's full allowance and none of the old
   // one's cooldown or slowed spacing.
   onRotated: (lane) => resetLibgenLane(lane.key),
+  mainControllable: Boolean(MAIN_CONTROL_URL),
 });
+
+// Changed from the settings page; the environment only gives the defaults.
+const settings = new SettingsStore(path.join(CONFIG_DIRECTORY, "settings.json"), {
+  concurrency: CONCURRENCY,
+  autoRotate: Boolean(GLUETUN_API_KEY),
+  paused: false,
+});
+const startupSettings = settings.read();
+lanes.setAutoRotate(startupSettings.autoRotate);
 
 const queue = new QueueService({
   store,
@@ -132,7 +161,7 @@ const queue = new QueueService({
   mirrors,
   outputDirectory: OUTPUT_DIRECTORY,
   storage,
-  concurrency: CONCURRENCY,
+  concurrency: startupSettings.concurrency,
   annasKey: ANNAS_KEY,
   annasDomain: ANNAS_DOMAIN,
   onFinished: notifyFinished,
@@ -148,6 +177,8 @@ const metadata = new MetadataService({
   contact: CONTACT_EMAIL,
   onUpdated: (items) => queue.refreshed(items),
 });
+
+queue.setPaused(startupSettings.paused);
 
 const recovered = store.recoverInterrupted();
 if (recovered > 0) {
@@ -436,6 +467,80 @@ const buildFailureList = (): string => {
   return lines.join("\n");
 };
 
+/** Every lane as the settings page shows it: VPN, pacing and what it delivered. */
+const buildLaneReport = () => {
+  const counts = queue.laneStats();
+  return {
+    autoRotate: lanes.getAutoRotate(),
+    canRotate: Boolean(GLUETUN_API_KEY),
+    lanes: lanes.getStates().map((state) => {
+      const lane = lanes.lanes.find((candidate) => candidate.key === state.key) ?? {
+        key: state.key,
+      };
+      const pacing = libgenLaneSnapshot(state.key);
+      let cooldownUntil = "";
+      if (pacing.cooldownUntil > Date.now()) {
+        cooldownUntil = new Date(pacing.cooldownUntil).toISOString();
+      }
+      return {
+        ...state,
+        canReconnect: lanes.canReconnect(lane),
+        spacingSeconds: Math.round(pacing.intervalMs / 1000),
+        cooldownUntil,
+        refusals: pacing.refusals,
+        ...(counts[state.key] ?? { workers: 0, downloaded: 0, failed: 0, bytes: 0 }),
+      };
+    }),
+  };
+};
+
+/** A reconnected lane is out of use until a probe sees it on its new server. */
+const probeSoon = () => {
+  setTimeout(() => {
+    void lanes.probe().then(() => queue.start());
+  }, 15_000).unref?.();
+};
+
+const handleLaneReconnect = async (request: Request): Promise<Response> => {
+  let key = "";
+  try {
+    const body = (await request.json()) as { key?: unknown };
+    if (typeof body?.key === "string") {
+      key = body.key;
+    }
+  } catch {
+    // No body: every lane.
+  }
+
+  if (key) {
+    const result = await lanes.reconnect(key);
+    probeSoon();
+    let status = 200;
+    if (!result.ok) {
+      status = 502;
+    }
+    return json({ results: { [key]: result } }, status);
+  }
+
+  const results = await lanes.reconnectAll();
+  probeSoon();
+  return json({ results });
+};
+
+const handleSettingsPost = async (request: Request): Promise<Response> => {
+  let saved;
+  try {
+    saved = settings.update(await request.json());
+  } catch (error: unknown) {
+    return json({ error: (error as Error).message }, 400);
+  }
+
+  queue.setConcurrency(saved.concurrency);
+  lanes.setAutoRotate(saved.autoRotate);
+  queue.setPaused(saved.paused);
+  return json({ settings: saved });
+};
+
 const handleRequest = async (request: Request): Promise<Response> => {
   const url = new URL(request.url);
   const { pathname } = url;
@@ -471,7 +576,8 @@ const handleRequest = async (request: Request): Promise<Response> => {
       unreachableMirrors: state.unreachableMirrorSources,
       lastRefreshedAt: state.lastRefreshedAt || "",
       lanes: lanes.getStates(),
-      concurrency: CONCURRENCY,
+      concurrency: queue.getConcurrency(),
+      paused: queue.isPaused(),
       // For the links on rows that could not be fetched automatically, and to
       // say which extra routes are switched on. Never the key itself.
       annasDomain: ANNAS_DOMAIN,
@@ -575,6 +681,33 @@ const handleRequest = async (request: Request): Promise<Response> => {
     return openEventStream();
   }
 
+  if (pathname === "/api/lanes") {
+    return json(buildLaneReport());
+  }
+
+  if (pathname === "/api/lanes/reconnect" && request.method === "POST") {
+    return handleLaneReconnect(request);
+  }
+
+  if (pathname === "/api/settings") {
+    if (request.method === "POST") {
+      return handleSettingsPost(request);
+    }
+    return json({ settings: settings.read() });
+  }
+
+  if (pathname === "/api/stats") {
+    return json({
+      ...store.stats(),
+      running: queue.isRunning(),
+      paused: queue.isPaused(),
+      concurrency: queue.getConcurrency(),
+      annasDomain: ANNAS_DOMAIN,
+      annasEnabled: Boolean(ANNAS_KEY),
+      startedAt: STARTED_AT,
+    });
+  }
+
   return notFound();
 };
 
@@ -586,7 +719,7 @@ const server = Bun.serve({
 });
 
 console.log(`libgen-downloader web UI on http://localhost:${server.port}`);
-console.log(`downloads -> ${OUTPUT_DIRECTORY} (${CONCURRENCY} at once)`);
+console.log(`downloads -> ${OUTPUT_DIRECTORY} (${queue.getConcurrency()} at once)`);
 console.log(`config    -> ${CONFIG_DIRECTORY}`);
 let openAccessRoute = "off (no LIBGEN_OPEN_ACCESS_EMAIL)";
 if (process.env.LIBGEN_OPEN_ACCESS_EMAIL) {

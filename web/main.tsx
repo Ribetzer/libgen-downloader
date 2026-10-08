@@ -1,5 +1,6 @@
 import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { SettingsPanel } from "./settings-panel";
 
 interface ServerConfig {
   version: string;
@@ -15,6 +16,7 @@ interface ServerConfig {
   /** Ways out to LibGen, one per VPN connection. */
   lanes?: { key: string; proxied: boolean; ready: boolean; ip: string }[];
   concurrency?: number;
+  paused?: boolean;
   annasDomain?: string;
   libraryProxy?: string;
   annasEnabled?: boolean;
@@ -328,6 +330,7 @@ const App = () => {
   const [history, setHistory] = useState<QueueItem[]>([]);
   const [uploadNote, setUploadNote] = useState("");
   const [dragging, setDragging] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const loadConfig = useCallback(async (recheck = false) => {
@@ -611,7 +614,19 @@ const App = () => {
             ))}
           </span>
         )}
+        {config?.paused && (
+          <span className="meta">
+            <span className="status-dot bad" />
+            <strong>paused</strong>
+          </span>
+        )}
         <span className="meta">v{config?.version || "…"}</span>
+        <button
+          className={`small ${showSettings ? "on" : ""}`}
+          onClick={() => setShowSettings(!showSettings)}
+        >
+          Settings
+        </button>
       </header>
 
       {config?.storageError && (
@@ -647,6 +662,7 @@ const App = () => {
       )}
 
       <main>
+        {showSettings && <SettingsPanel onChanged={() => void loadConfig()} />}
         <section>
           <h2>Search</h2>
           <div className="body">

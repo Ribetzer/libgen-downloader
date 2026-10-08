@@ -340,6 +340,17 @@ connection.
 - **The queue database waits for a lock** (`PRAGMA busy_timeout`): an UPDATE
   run by hand against the live file crashed the server with `SQLITE_BUSY`.
 - **Concurrency:** defaults to two workers per lane.
+- **The settings page** (header button; `/api/lanes`, `/api/lanes/reconnect`,
+  `/api/settings`, `/api/stats`) changes concurrency, automatic rotation and
+  pause at runtime. `SettingsStore` keeps them in `<config>/settings.json`, and
+  the environment only gives defaults. `QueueService.setConcurrency` raises
+  at once; lowered, extra workers finish their item and retire (`RETIRED`).
+  Paused, no worker claims a row and in-flight transfers finish. A reconnect by
+  hand skips `ROTATE_MIN_GAP_MS`. The main lane reconnects through its own
+  gluetun at `127.0.0.1:8000` (`LIBGEN_MAIN_CONTROL_URL`), which needs the same
+  `auth/config.toml` role as the lanes; reconnecting it restarts what is
+  downloading on it. Lane probes read Cloudflare's `loc=` as the exit country.
+  Per-lane counts are in memory, since the server started.
 
 Transfers get their own, larger budget: `DOWNLOAD_ATTEMPT_COUNT` (6) per mirror across `MAX_DOWNLOAD_MIRRORS` (4), spaced by `DOWNLOAD_BACKOFF_MS` and clamped in wall-clock terms by `DOWNLOAD_TOTAL_BUDGET_MS` (45 min). **An attempt count is not a time limit** — 24 tries at a few minutes each is hours with the sequential queue blocked behind one file, which is what the budget exists to bound. `THROTTLE_BACKOFF_MS` is separate and much longer: a mirror answering 429/503 is asking for a slower pace, not reporting a dropped connection.
 

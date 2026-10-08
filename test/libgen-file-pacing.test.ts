@@ -369,3 +369,24 @@ describe("adaptive spacing per lane", () => {
     expect(waits[0]).toBe(heard[0]);
   });
 });
+
+describe("a lane's pacing, as the settings page shows it", () => {
+  it("reports its spacing, cooldown and recent refusals without changing them", async () => {
+    const { libgenLaneSnapshot, noteLibgenFileLimit, resetLibgenLane, slowLibgenLane } =
+      await import("../src/api/data/libgen-file-pacing");
+    resetLibgenLane("snap");
+    slowLibgenLane("snap");
+    noteLibgenFileLimit(60_000, "snap");
+
+    const snapshot = libgenLaneSnapshot("snap");
+    expect(snapshot.refusals).toBe(1);
+    expect(snapshot.cooldownUntil).toBeGreaterThan(Date.now());
+    expect(snapshot.intervalMs).toBeGreaterThanOrEqual(0);
+    expect(libgenLaneSnapshot("never-used")).toEqual({
+      intervalMs: 0,
+      cooldownUntil: 0,
+      refusals: 0,
+    });
+    resetLibgenLane("snap");
+  });
+});

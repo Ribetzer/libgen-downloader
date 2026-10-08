@@ -83,6 +83,9 @@ const withLaneProxy = (hostInit: RequestInit, lane: DownloadLane): RequestInit =
  * bytes of one; and one sequential worker left a 400 MB book holding up two
  * thousand small papers behind it.
  */
+/** What `work` resolves with when it stopped because the concurrency fell. */
+const RETIRED = -1;
+
 export class QueueService {
   private store: ItemStore;
   private mirrors: MirrorService;
@@ -90,7 +93,12 @@ export class QueueService {
   private storage: StorageService | undefined;
   private listeners = new Set<Listener>();
   private workers = 0;
+  /** Workers that have seen the concurrency lowered and are on their way out. */
+  private retiring = 0;
+  private paused = false;
   private concurrency: number;
+  /** What each lane delivered since the process started, for the settings page. */
+  private laneCounts = new Map<string, { downloaded: number; failed: number; bytes: number }>();
   private lanes: DownloadLane[];
   private laneWorkers = new Map<string, number>();
   private isLaneReady: (lane: DownloadLane) => boolean;
@@ -317,6 +325,67 @@ export class QueueService {
     return this.workers > 0;
   }
 
+  isPaused(): boolean {
+    return this.paused;
+  }
+
+  /**
+   * Paused, no worker takes a new item; what is downloading finishes. Items
+   * stay queued, so resuming carries on where it left off.
+   */
+  setPaused(paused: boolean): void {
+    this.paused = paused;
+    if (!paused) {
+      this.start();
+    }
+  }
+
+  getConcurrency(): number {
+    return this.concurrency;
+  }
+
+  /**
+   * Raised, new workers start at once. Lowered, the extra workers finish
+   * what they are downloading and then stop, rather than being cut off.
+   */
+  setConcurrency(concurrency: number): void {
+    this.concurrency = Math.max(1, Math.floor(concurrency));
+    this.start();
+  }
+
+  /** Per lane: workers on it now, and what it delivered since the start. */
+  laneStats(): Record<
+    string,
+    { workers: number; downloaded: number; failed: number; bytes: number }
+  > {
+    const stats: Record<
+      string,
+      { workers: number; downloaded: number; failed: number; bytes: number }
+    > = {};
+    for (const lane of this.lanes) {
+      stats[lane.key] = {
+        workers: this.laneWorkers.get(lane.key) ?? 0,
+        ...(this.laneCounts.get(lane.key) ?? { downloaded: 0, failed: 0, bytes: 0 }),
+      };
+    }
+    return stats;
+  }
+
+  private countOutcome(id: number, laneKey: string): void {
+    const item = this.store.get(id);
+    if (!item) {
+      return;
+    }
+    const counts = this.laneCounts.get(laneKey) ?? { downloaded: 0, failed: 0, bytes: 0 };
+    if (item.status === "downloaded") {
+      counts.downloaded += 1;
+      counts.bytes += item.total || 0;
+    } else if (item.status === "failed") {
+      counts.failed += 1;
+    }
+    this.laneCounts.set(laneKey, counts);
+  }
+
   /**
    * Safe to call at any time: tops the workers up to the concurrency, and does
    * nothing when they are all busy. `queue-idle` is sent when the last one
@@ -324,6 +393,9 @@ export class QueueService {
    */
   start(): void {
     this.requests += 1;
+    if (this.paused) {
+      return;
+    }
     while (this.workers < this.concurrency) {
       const lane = this.quietestLane();
       if (!lane) {
@@ -338,6 +410,13 @@ export class QueueService {
       void this.work(lane).then((checkedAt) => {
         this.workers -= 1;
         this.laneWorkers.set(lane.key, (this.laneWorkers.get(lane.key) ?? 1) - 1);
+        if (checkedAt === RETIRED) {
+          this.retiring -= 1;
+          if (this.workers === 0) {
+            this.emit({ type: "queue-idle" });
+          }
+          return;
+        }
         // Work queued between this worker finding nothing and it counting
         // itself out would otherwise wait: `start()` saw every slot taken
         // and started nobody. So a worker that ran dry takes another look.
@@ -388,6 +467,17 @@ export class QueueService {
 
   private async work(lane: DownloadLane): Promise<number | undefined> {
     for (;;) {
+      // Paused: take nothing new. Resuming calls start() again.
+      if (this.paused) {
+        return undefined;
+      }
+
+      // The concurrency was lowered: this worker is one too many.
+      if (this.workers - this.retiring > this.concurrency) {
+        this.retiring += 1;
+        return RETIRED;
+      }
+
       // A lane whose VPN connection has dropped hands its worker back, and
       // start() gives the slot to a lane that is up.
       if (!this.laneOpen(lane)) {
@@ -416,6 +506,7 @@ export class QueueService {
       }
 
       await this.process(item, lane);
+      this.countOutcome(item.id, lane.key);
       this.announceFinished(item.id);
     }
   }

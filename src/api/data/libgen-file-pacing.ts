@@ -172,6 +172,21 @@ export const resetLibgenLane = (lane: string): void => {
   lanes.delete(lane);
 };
 
+/**
+ * A lane's pacing as it stands, for the settings page. Reads without creating
+ * state, so asking about a lane never used gives the defaults.
+ */
+export const libgenLaneSnapshot = (
+  lane: string
+): { intervalMs: number; cooldownUntil: number; refusals: number } => {
+  const state = lanes.get(lane);
+  return {
+    intervalMs: state?.intervalMs ?? minIntervalMs,
+    cooldownUntil: state?.cooldownUntil ?? 0,
+    refusals: libgenLaneRefusals(lane, 30 * 60_000),
+  };
+};
+
 /** This lane's current spacing between file requests. */
 export const libgenLaneIntervalMs = (lane = DIRECT_LANE): number => laneState(lane).intervalMs;
 
